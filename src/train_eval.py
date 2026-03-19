@@ -1,0 +1,191 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+from tqdm import tqdm
+from tqdm.auto import tqdm
+from PIL import Image
+from pathlib import Path
+from utils import get_model_path
+import config
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+
+def setup_training(model, lr=config.LEARNING_RATE):
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    return criterion, optimizer
+    # Utility function to set up the loss function (cross-entropy for classification) and the optimizer (Adam) with the specified learning rate, returning both for use in training and evaluation
+
+def train_one_epoch(model, loader, criterion, optimizer, device, epoch=None):
+    model.train()
+
+    running_loss = 0.0
+    all_labels = []
+    all_preds = []
+
+    progress_bar = tqdm(total=len(loader), desc=f"Train Epoch {epoch+1}", leave=True)
+    
+    for batch_idx, (images, labels) in enumerate(loader):
+        progress_bar.update(1)
+
+        images = images.to(device)
+        labels = labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item() * images.size(0)
+
+        preds = outputs.argmax(dim=1)
+        all_labels.extend(labels.cpu().numpy())
+        all_preds.extend(preds.cpu().numpy())
+
+        running_avg_loss = running_loss / len(all_labels)
+        running_acc = accuracy_score(all_labels, all_preds)
+
+        progress_bar.set_postfix(
+            batch_loss=f"{loss.item():.4f}",
+            avg_loss=f"{running_avg_loss:.4f}",
+            avg_acc=f"{running_acc:.4f}",
+        )
+
+    progress_bar.close()
+
+    epoch_loss = running_loss / len(loader.dataset)
+    epoch_acc = accuracy_score(all_labels, all_preds)
+
+    return epoch_loss, epoch_acc
+
+def evaluate(model, loader, criterion, device, epoch=None):
+    model.eval()
+
+    running_loss = 0.0
+    all_labels = []
+    all_preds = []
+
+    progress_bar = tqdm(
+        loader,
+        desc=f"Val" if epoch is None else f"Val Epoch {epoch + 1}",
+        leave=False
+    )
+
+    with torch.no_grad():
+        for batch_idx, (images, labels) in enumerate(progress_bar):
+            images = images.to(device)
+            labels = labels.to(device)
+
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+
+            running_loss += loss.item() * images.size(0)
+
+            preds = outputs.argmax(dim=1)
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(preds.cpu().numpy())
+
+            running_avg_loss = running_loss / len(all_labels)
+            running_acc = accuracy_score(all_labels, all_preds)
+
+            progress_bar.set_postfix({
+                "avg_loss": f"{running_avg_loss:.4f}",
+                "avg_acc": f"{running_acc:.4f}"
+            })
+
+    epoch_loss = running_loss / len(loader.dataset)
+    epoch_acc = accuracy_score(all_labels, all_preds)
+    epoch_precision = precision_score(all_labels, all_preds, zero_division=0)
+    epoch_recall = recall_score(all_labels, all_preds, zero_division=0)
+    epoch_f1 = f1_score(all_labels, all_preds, zero_division=0)
+
+    return epoch_loss, epoch_acc, epoch_precision, epoch_recall, epoch_f1, all_labels, all_preds
+
+def train_model(model, train_loader, val_loader, criterion, optimizer, device, save_name: str = None, patience: int = 3):
+    if save_name is None:
+        save_name = config.BEST_MODEL_NAME.replace(".pt", "")
+
+    save_path = get_model_path(save_name)
+    config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    history = {
+        "train_loss": [],
+        "train_acc": [],
+        "val_loss": [],
+        "val_acc": [],
+        "val_precision": [],
+        "val_recall": [],
+        "val_f1": []
+    }
+
+    best_val_f1 = -1.0
+    patience_counter = 0
+
+    for epoch in range(config.NUM_EPOCHS):
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, criterion, optimizer, device, epoch=epoch
+        )
+
+        val_loss, val_acc, val_precision, val_recall, val_f1, _, _ = evaluate(
+            model, val_loader, criterion, device, epoch=epoch
+        )
+
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+        history["val_precision"].append(val_precision)
+        history["val_recall"].append(val_recall)
+        history["val_f1"].append(val_f1)
+
+        print(f"Epoch {epoch + 1}/{config.NUM_EPOCHS}")
+        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+        print(f"  Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+        print(f"  Val Precision: {val_precision:.4f}")
+        print(f"  Val Recall: {val_recall:.4f} | Val F1: {val_f1:.4f}")
+        print("-" * 60)
+
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            patience_counter = 0
+            torch.save(model.state_dict(), save_path)
+            print(f"Saved best model to {save_path}")
+            print("-" * 60)
+        else:
+            patience_counter += 1
+            print(f"No improvement. Patience: {patience_counter}/{patience}")
+            print("-" * 60)
+
+        if patience_counter >= patience:
+            print("Early stopping at epoch {epoch + 1} (patience {patience} exceeded)")
+            break
+
+    return history
+
+idx_to_class = {
+    0: "normal",
+    1: "abnormal"
+}
+
+def predict_single_image(image_path, model, device, transform):
+    model.eval()
+    
+    image = Image.open(image_path).convert("L")
+    image_tensor = transform(image).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        output = model(image_tensor)
+        probs = torch.softmax(output, dim=1).cpu().numpy()[0]
+        pred_idx = int(np.argmax(probs))
+
+    return {
+        "predicted_class": idx_to_class[pred_idx],
+        "probabilities": {
+            "normal": float(probs[0]),
+            "abnormal": float(probs[1]),
+        }
+    }
