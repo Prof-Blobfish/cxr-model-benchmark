@@ -3,6 +3,24 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import config
 
+import sys
+import os
+import platform
+import contextlib
+
+@contextlib.contextmanager
+def suppress_macos_malloc_warning():
+    if platform.system() == "Darwin":  # Darwin = macOS
+        with open(os.devnull, 'w') as devnull:
+            old_stderr = sys.stderr
+            sys.stderr = devnull
+            try:
+                yield
+            finally:
+                sys.stderr = old_stderr
+    else:
+        yield
+
 def get_device():
     if torch.backends.mps.is_available():
         device = torch.device("mps")

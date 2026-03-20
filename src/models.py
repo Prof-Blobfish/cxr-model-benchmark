@@ -2,10 +2,23 @@ import torch
 import torch.nn as nn
 from torchvision import models
 
+def get_model(model_name):
+    if model_name == "resnet18":
+        return ResNet18(num_classes=2, pretrained=True, in_channels=1)
+    elif model_name == "simple_cnn":
+        return SimpleCNN()
+    else:
+        raise ValueError(f"Unsupported model name: {model_name}")
+    # Factory function to create and return a model instance based on the specified model name, allowing for easy switching between different architectures (e.g., ResNet18 or a simple custom CNN)
+
 class ResNet18(nn.Module):
     def __init__(self, num_classes=2, pretrained=False, in_channels=1):
         super().__init__()
-        self.model = models.resnet18(pretrained=pretrained)
+        if pretrained:
+            weights = models.ResNet18_Weights.IMAGENET1K_V1
+        else:
+            weights = None
+        self.model = models.resnet18(weights=weights)
 
         if in_channels == 1:
             self.model.conv1 = nn.Conv2d(

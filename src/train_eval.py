@@ -2,14 +2,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-from tqdm import tqdm
+import pandas as pd
 from tqdm.auto import tqdm
 from PIL import Image
 from pathlib import Path
-from utils import get_model_path
+from utils import get_model_path, suppress_macos_malloc_warning
 import config
-
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+import time
 
 def setup_training(model, lr=config.LEARNING_RATE):
     criterion = nn.CrossEntropyLoss()
@@ -18,18 +18,20 @@ def setup_training(model, lr=config.LEARNING_RATE):
     return criterion, optimizer
     # Utility function to set up the loss function (cross-entropy for classification) and the optimizer (Adam) with the specified learning rate, returning both for use in training and evaluation
 
-def train_one_epoch(model, loader, criterion, optimizer, device, epoch=None):
+def train_one_epoch(model, loader, criterion, optimizer, device, epoch=None, start_time=None, total_epochs=None):
     model.train()
 
     running_loss = 0.0
     all_labels = []
     all_preds = []
 
-    progress_bar = tqdm(total=len(loader), desc=f"Train Epoch {epoch+1}", leave=True)
-    
-    for batch_idx, (images, labels) in enumerate(loader):
-        progress_bar.update(1)
+    progress_bar = tqdm(
+        loader,
+        desc=f"Train Epoch {epoch + 1}",
+        leave=True
+    )
 
+    for batch_idx, (images, labels) in enumerate(progress_bar):
         images = images.to(device)
         labels = labels.to(device)
 
@@ -49,13 +51,22 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch=None):
         running_avg_loss = running_loss / len(all_labels)
         running_acc = accuracy_score(all_labels, all_preds)
 
+        # Total ETA calculation
+        total_eta_str = None
+        if start_time is not None and total_epochs is not None and epoch is not None:
+            elapsed_time = time.time() - start_time
+            # Estimate progress as (epoch + batch progress)
+            progress = epoch + (batch_idx + 1) / len(loader)
+            avg_epoch_time = elapsed_time / progress if progress > 0 else 0
+            total_seconds = int(avg_epoch_time * total_epochs)
+            total_eta_str = time.strftime('%H:%M:%S', time.gmtime(total_seconds))
+
         progress_bar.set_postfix(
             batch_loss=f"{loss.item():.4f}",
             avg_loss=f"{running_avg_loss:.4f}",
             avg_acc=f"{running_acc:.4f}",
+            total_eta=total_eta_str if total_eta_str else '...'
         )
-
-    progress_bar.close()
 
     epoch_loss = running_loss / len(loader.dataset)
     epoch_acc = accuracy_score(all_labels, all_preds)
@@ -71,12 +82,12 @@ def evaluate(model, loader, criterion, device, epoch=None):
 
     progress_bar = tqdm(
         loader,
-        desc=f"Val" if epoch is None else f"Val Epoch {epoch + 1}",
-        leave=False
+        desc="Val" if epoch is None else f"Val Epoch {epoch + 1}",
+        leave=True
     )
 
     with torch.no_grad():
-        for batch_idx, (images, labels) in enumerate(progress_bar):
+        for images, labels in progress_bar:
             images = images.to(device)
             labels = labels.to(device)
 
@@ -92,10 +103,10 @@ def evaluate(model, loader, criterion, device, epoch=None):
             running_avg_loss = running_loss / len(all_labels)
             running_acc = accuracy_score(all_labels, all_preds)
 
-            progress_bar.set_postfix({
-                "avg_loss": f"{running_avg_loss:.4f}",
-                "avg_acc": f"{running_acc:.4f}"
-            })
+            progress_bar.set_postfix(
+                avg_loss=f"{running_avg_loss:.4f}",
+                avg_acc=f"{running_acc:.4f}"
+            )
 
     epoch_loss = running_loss / len(loader.dataset)
     epoch_acc = accuracy_score(all_labels, all_preds)
@@ -125,13 +136,18 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, s
     best_val_f1 = -1.0
     patience_counter = 0
 
+
+    start_time = time.time()
+    total_eta_str = None
     for epoch in range(config.NUM_EPOCHS):
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch=epoch
+            model, train_loader, criterion, optimizer, device,
+            epoch=epoch, start_time=start_time, total_epochs=config.NUM_EPOCHS
         )
 
         val_loss, val_acc, val_precision, val_recall, val_f1, _, _ = evaluate(
-            model, val_loader, criterion, device, epoch=epoch
+            model, val_loader, criterion, device,
+            epoch=epoch
         )
 
         history["train_loss"].append(train_loss)
@@ -142,7 +158,18 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, s
         history["val_recall"].append(val_recall)
         history["val_f1"].append(val_f1)
 
-        print(f"Epoch {epoch + 1}/{config.NUM_EPOCHS}")
+        # ETA calculation
+        elapsed_time = time.time() - start_time
+        avg_epoch_time = elapsed_time / (epoch + 1)
+        remaining_epochs = config.NUM_EPOCHS - (epoch + 1)
+        eta_seconds = int(avg_epoch_time * remaining_epochs)
+        eta_str = time.strftime('%H:%M:%S', time.gmtime(eta_seconds))
+        # Calculate total ETA after first epoch
+        if epoch == 0:
+            total_seconds = int(avg_epoch_time * config.NUM_EPOCHS)
+            total_eta_str = time.strftime('%H:%M:%S', time.gmtime(total_seconds))
+
+        print(f"Epoch {epoch + 1}/{config.NUM_EPOCHS} | ETA (Remaining): {eta_str} | Total ETA: {total_eta_str if total_eta_str else '...'}")
         print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
         print(f"  Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
         print(f"  Val Precision: {val_precision:.4f}")
@@ -161,7 +188,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, device, s
             print("-" * 60)
 
         if patience_counter >= patience:
-            print("Early stopping at epoch {epoch + 1} (patience {patience} exceeded)")
+            print(f"Early stopping at epoch {epoch + 1} (patience {patience} exceeded)")
             break
 
     return history
@@ -171,9 +198,8 @@ idx_to_class = {
     1: "abnormal"
 }
 
-def predict_single_image(image_path, model, device, transform):
+def predict_single_image(image_path, model, device, transform, df=None):
     model.eval()
-    
     image = Image.open(image_path).convert("L")
     image_tensor = transform(image).unsqueeze(0).to(device)
 
@@ -182,10 +208,18 @@ def predict_single_image(image_path, model, device, transform):
         probs = torch.softmax(output, dim=1).cpu().numpy()[0]
         pred_idx = int(np.argmax(probs))
 
+    # Find the true label from the provided dataframe
+    true_label = None
+    if df is not None:
+        row = df[df["image_path"] == image_path]
+        if not row.empty:
+            true_label = idx_to_class[int(row["target"].iloc[0])]
+
     return {
         "predicted_class": idx_to_class[pred_idx],
         "probabilities": {
             "normal": float(probs[0]),
             "abnormal": float(probs[1]),
-        }
+        },
+        "true_label": true_label
     }
