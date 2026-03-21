@@ -6,7 +6,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 from PIL import Image
 from pathlib import Path
-from utils import get_model_path, suppress_macos_malloc_warning
+from utils import get_model_path
 import config
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
 import time

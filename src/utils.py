@@ -8,19 +8,6 @@ import os
 import platform
 import contextlib
 
-@contextlib.contextmanager
-def suppress_macos_malloc_warning():
-    if platform.system() == "Darwin":  # Darwin = macOS
-        with open(os.devnull, 'w') as devnull:
-            old_stderr = sys.stderr
-            sys.stderr = devnull
-            try:
-                yield
-            finally:
-                sys.stderr = old_stderr
-    else:
-        yield
-
 def get_device():
     if torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -39,28 +26,37 @@ def get_model_path(name):
     return config.MODEL_DIR / f"{name}.pt"
 
 def plot_training_history(history):
-    epochs = range(1, config.NUM_EPOCHS + 1)
+    # Find the minimum length among all history lists
+    keys = [
+        "train_loss", "val_loss", "train_acc", "val_acc",
+        "val_precision", "val_recall", "val_f1"
+    ]
+    min_len = min(len(history[k]) for k in keys)
+
+    # Truncate all lists to the minimum length
+    history_trunc = {k: history[k][:min_len] for k in keys}
+    epochs = range(1, min_len + 1)
 
     fig1, ax1 = plt.subplots(figsize=(8, 5))
-    ax1.plot(epochs, history["train_loss"], label = "Train Loss")
-    ax1.plot(epochs, history["val_loss"], label = "Val Loss")
+    ax1.plot(epochs, history_trunc["train_loss"], label = "Train Loss")
+    ax1.plot(epochs, history_trunc["val_loss"], label = "Val Loss")
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss")
     ax1.set_title("Training and Validation Loss")
     ax1.legend()
 
     fig2, ax2 = plt.subplots(figsize=(8, 5))
-    ax2.plot(epochs, history["train_acc"], label = "Train Acc")
-    ax2.plot(epochs, history["val_acc"], label = "Val Acc")
+    ax2.plot(epochs, history_trunc["train_acc"], label = "Train Acc")
+    ax2.plot(epochs, history_trunc["val_acc"], label = "Val Acc")
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Accuracy")
     ax2.set_title("Training and Validation Accuracy")
     ax2.legend()
 
     fig3, ax3 = plt.subplots(figsize=(8, 5))
-    ax3.plot(epochs, history["val_precision"], label = "Val Precision")
-    ax3.plot(epochs, history["val_recall"], label = "Val Recall")
-    ax3.plot(epochs, history["val_f1"], label = "Val F1")
+    ax3.plot(epochs, history_trunc["val_precision"], label = "Val Precision")
+    ax3.plot(epochs, history_trunc["val_recall"], label = "Val Recall")
+    ax3.plot(epochs, history_trunc["val_f1"], label = "Val F1")
     ax3.set_xlabel("Epoch")
     ax3.set_ylabel("Score")
     ax3.set_title("Validation Precision, Recall, and F1 Score")

@@ -11,30 +11,6 @@ def get_model(model_name):
         raise ValueError(f"Unsupported model name: {model_name}")
     # Factory function to create and return a model instance based on the specified model name, allowing for easy switching between different architectures (e.g., ResNet18 or a simple custom CNN)
 
-class ResNet18(nn.Module):
-    def __init__(self, num_classes=2, pretrained=False, in_channels=1):
-        super().__init__()
-        if pretrained:
-            weights = models.ResNet18_Weights.IMAGENET1K_V1
-        else:
-            weights = None
-        self.model = models.resnet18(weights=weights)
-
-        if in_channels == 1:
-            self.model.conv1 = nn.Conv2d(
-                in_channels,
-                self.model.conv1.out_channels,
-                kernel_size=self.model.conv1.kernel_size,
-                stride=self.model.conv1.stride,
-                padding=self.model.conv1.padding,
-                bias=False,
-            )
-
-        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
-
-    def forward(self, x):
-        return self.model(x)
-
 class SimpleCNN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -69,3 +45,65 @@ class SimpleCNN(nn.Module):
         x = self.classifier(x)
         return x
     # Defines the forward pass of the model, passing the input through the feature extractor and then the classifier to produce the final output logits
+
+class ResNet18(nn.Module):
+    def __init__(self, num_classes=2, pretrained=False, in_channels=1):
+        super().__init__()
+
+        if pretrained:
+            weights = models.ResNet18_Weights.DEFAULT
+        else:
+            weights = None
+        self.model = models.resnet18(weights=weights)
+
+        if in_channels == 1:
+            self.model.conv1 = nn.Conv2d(
+                in_channels,
+                self.model.conv1.out_channels,
+                kernel_size=self.model.conv1.kernel_size,
+                stride=self.model.conv1.stride,
+                padding=self.model.conv1.padding,
+                bias=False,
+            )
+
+        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
+
+class ResNet34(nn.Module):
+    def __init__(self, num_classes=2, pretrained=True, freeze_backbone=False, dropout=0.3, in_channels=1):
+        super().__init__()
+
+        if pretrained:
+            weights = models.ResNet34_Weights.DEFAULT
+        else:
+            weights = None
+
+        backbone = models.resnet34(weights=weights)
+
+        if in_channels == 1:
+            backbone.conv1 = nn.Conv2d(
+                in_channels,
+                backbone.conv1.out_channels,
+                kernel_size=backbone.conv1.kernel_size,
+                stride=backbone.conv1.stride,
+                padding=backbone.conv1.padding,
+                bias=False,
+            )
+
+        if freeze_backbone:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+        in_features = backbone.fc.in_features
+
+        backbone.fc = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(in_features, num_classes)
+        )
+
+        self.backbone = backbone
+
+    def forward(self, x):
+        return self.backbone(x)
