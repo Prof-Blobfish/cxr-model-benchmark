@@ -107,3 +107,26 @@ class ResNet34(nn.Module):
 
     def forward(self, x):
         return self.backbone(x)
+
+class DenseNet121(nn.Module):
+    def __init__(self, num_classes=2, in_channels=1):
+        super().__init__()
+
+        self.model = models.densenet121(weights=None)
+
+        # Modify first conv layer for grayscale
+        self.model.features.conv0 = nn.Conv2d(
+            in_channels,
+            64,
+            kernel_size=7,
+            stride=2,
+            padding=3,
+            bias=False
+        )
+
+        # Replace classifier
+        in_features = self.model.classifier.in_features
+        self.model.classifier = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
