@@ -155,3 +155,27 @@ class EfficientNetB0(nn.Module):
 
     def forward(self, x):
         return self.model(x)
+
+class MobileNetV2(nn.Module):
+    def __init__(self, num_classes=2, in_channels=1):
+        super().__init__()
+
+        # Load MobileNetV2
+        self.model = models.mobilenet_v2(weights=None)
+
+        # Modify first convolution layer for grayscale input
+        self.model.features[0][0] = nn.Conv2d(
+            in_channels,
+            32,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            bias=False
+        )
+
+        # Replace classifier
+        in_features = self.model.classifier[1].in_features
+        self.model.classifier[1] = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.model(x)

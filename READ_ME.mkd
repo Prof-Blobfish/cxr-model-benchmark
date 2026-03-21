@@ -1,8 +1,7 @@
 Planned models:
     CNN (Basic model)
-    ResNet-34 or ResNet-50 (Residual family)
+    ResNet-18 or ResNet-34 (Residual family)
     DenseNet-121 (Dense connectivity)
     EfficientNet-B0 (Efficient family)
     MobileNetV2 (Mobile/lightweight)
     VGG16 (Classic baseline)
-

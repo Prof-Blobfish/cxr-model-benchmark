@@ -24,3 +24,6 @@ env/
 
 # Ignore dataset directories (if you keep large datasets in the repo)
 # data/
+
+#Ignore saved models directory
+saved_models/
