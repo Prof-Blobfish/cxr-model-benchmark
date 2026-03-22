@@ -1,7 +1,25 @@
 Planned models:
-    CNN (Basic model)
-    ResNet-18 or ResNet-34 (Residual family)
-    DenseNet-121 (Dense connectivity)
-    EfficientNet-B0 (Efficient family)
-    MobileNetV2 (Mobile/lightweight)
-    VGG16 (Classic baseline)
+    - CNN: baseline
+        - Local feature extraction with minimal depth (conv -> relu -> pool -> linear)
+        - No sohphistication
+    - ResNet-18: residual learning
+        - Learn residuals instead of full transformations
+        - Skip connections
+        - Enables deeper networks
+    - DenseNet-121: feature reuse
+        - Every layer sees all previous features
+        - Concatenation instead of addition (each layer gets [x0, x1, x2,...] instead of x0 -> x1 -> x2...)
+        - Improve learning with information sharing
+    - EfficientNet-B0: scaling
+        - Balance depth, width, and resolution
+        - Use compound scaling
+        - Optimization of architecture design
+    - MobileNetV2: efficiency
+        - Separate spatial and channel computation
+        - Depthwise separable convolutions
+    - ShuffleNetV2: lightweight/channel shuffling
+        - Split -> process -> shuffle -> merge
+        - Information flow across channels
+    - SqueezeNet: fire modules (squeeze + expand layers)
+        - Minimize params aggressively
+        - Extreme efficiency baseline

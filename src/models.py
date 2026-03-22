@@ -71,43 +71,6 @@ class ResNet18(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-class ResNet34(nn.Module):
-    def __init__(self, num_classes=2, pretrained=True, freeze_backbone=False, dropout=0.3, in_channels=1):
-        super().__init__()
-
-        if pretrained:
-            weights = models.ResNet34_Weights.DEFAULT
-        else:
-            weights = None
-
-        backbone = models.resnet34(weights=weights)
-
-        if in_channels == 1:
-            backbone.conv1 = nn.Conv2d(
-                in_channels,
-                backbone.conv1.out_channels,
-                kernel_size=backbone.conv1.kernel_size,
-                stride=backbone.conv1.stride,
-                padding=backbone.conv1.padding,
-                bias=False,
-            )
-
-        if freeze_backbone:
-            for param in backbone.parameters():
-                param.requires_grad = False
-
-        in_features = backbone.fc.in_features
-
-        backbone.fc = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(in_features, num_classes)
-        )
-
-        self.backbone = backbone
-
-    def forward(self, x):
-        return self.backbone(x)
-
 class DenseNet121(nn.Module):
     def __init__(self, num_classes=2, in_channels=1):
         super().__init__()
@@ -176,6 +139,21 @@ class MobileNetV2(nn.Module):
         # Replace classifier
         in_features = self.model.classifier[1].in_features
         self.model.classifier[1] = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
+    
+class ShuffleNetV2(nn.Module):
+    def __init__(self, num_classes=2, in_channels=1):
+        super().__init__()
+
+        self.model = models.shufflenet_v2_x1_0(weights=None)
+
+        self.model.conv1[0] = nn.Conv2d(
+            in_channels, 24, kernel_size=3, stride=2, padding=1, bias=False
+        )
+
+        self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
 
     def forward(self, x):
         return self.model(x)

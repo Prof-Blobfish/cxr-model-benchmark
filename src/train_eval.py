@@ -116,7 +116,7 @@ def evaluate(model, loader, criterion, device, epoch=None):
 
     return epoch_loss, epoch_acc, epoch_precision, epoch_recall, epoch_f1, all_labels, all_preds
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, device, save_name: str = None, patience: int = 3):
+def train_model(model, train_loader, val_loader, criterion, optimizer, device, save_name: str = None, patience: int = config.NUM_EPOCHS):
     if save_name is None:
         save_name = config.BEST_MODEL_NAME.replace(".pt", "")
 
