@@ -157,3 +157,32 @@ class ShuffleNetV2(nn.Module):
 
     def forward(self, x):
         return self.model(x)
+    
+class SqueezeNet(nn.Module):
+    def __init__(self, num_classes=2, in_channels=1):
+        super().__init__()
+
+        # Load SqueezeNet
+        self.model = models.squeezenet1_0(weights=None)
+
+        # Modify first conv layer for grayscale input
+        self.model.features[0] = nn.Conv2d(
+            in_channels,
+            96,
+            kernel_size=7,
+            stride=2
+        )
+
+        # Replace classifier
+        self.model.classifier = nn.Sequential(
+            nn.Dropout(p=0.5),
+            nn.Conv2d(512, num_classes, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+
+        self.num_classes = num_classes
+
+    def forward(self, x):
+        x = self.model(x)
+        return torch.flatten(x, 1)

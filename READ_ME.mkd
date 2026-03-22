@@ -22,4 +22,4 @@ Planned models:
         - Information flow across channels
     - SqueezeNet: fire modules (squeeze + expand layers)
         - Minimize params aggressively
-        - Extreme efficiency baseline
+        - Minimalistic extreme (efficiency) baseline
