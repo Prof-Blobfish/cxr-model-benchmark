@@ -2,8 +2,9 @@ from pathlib import Path
 
 IMAGE_SIZE = 224
 BATCH_SIZE = 64
-NUM_WORKERS = 8
-NUM_EPOCHS = 10
+NUM_WORKERS = 4
+NUM_EPOCHS = 30
+PATIENCE = 7
 LEARNING_RATE = 1e-4
 RANDOM_SEED = 42
 
@@ -15,4 +16,5 @@ MODEL_DIR = PROJECT_ROOT / "saved_models"
 BEST_MODEL_NAME = "best_simple_cnn.pt"
 
 # Dataset path (update this if your dataset location changes)
-DATASET_PATH = "/Volumes/Secretary/Datasets/NIH Chest X-Rays"
+# DATASET_PATH = "/Volumes/Secretary/Datasets/NIH Chest X-Rays"
+DATASET_PATH = "F:/Datasets/NIH_Chest_X-Rays"

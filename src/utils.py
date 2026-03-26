@@ -43,6 +43,8 @@ def plot_training_history(history):
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("Loss")
     ax1.set_title("Training and Validation Loss")
+    if history.get("best_epoch") is not None:
+        ax1.axvline(x=history["best_epoch"], color="green", linestyle="--", linewidth=1.5, label=f"Best (epoch {history['best_epoch']})")
     ax1.legend()
 
     fig2, ax2 = plt.subplots(figsize=(8, 5))
@@ -51,6 +53,8 @@ def plot_training_history(history):
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Accuracy")
     ax2.set_title("Training and Validation Accuracy")
+    if history.get("best_epoch") is not None:
+        ax2.axvline(x=history["best_epoch"], color="green", linestyle="--", linewidth=1.5, label=f"Best (epoch {history['best_epoch']})")
     ax2.legend()
 
     fig3, ax3 = plt.subplots(figsize=(8, 5))
@@ -60,10 +64,57 @@ def plot_training_history(history):
     ax3.set_xlabel("Epoch")
     ax3.set_ylabel("Score")
     ax3.set_title("Validation Precision, Recall, and F1 Score")
+    if history.get("best_epoch") is not None:
+        ax3.axvline(x=history["best_epoch"], color="green", linestyle="--", linewidth=1.5, label=f"Best (epoch {history['best_epoch']})")
     ax3.legend()
 
     return fig1, fig2, fig3
     # Utility function to plot the training history, including loss, accuracy, precision, recall, and F1 score over epochs for both training and validation sets, using Matplotlib for visualization
+
+import matplotlib.pyplot as plt
+
+def plot_training_history_compact(history, model_name="Model"):
+    epochs = range(1, len(history["train_loss"]) + 1)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Graph 1: Train/Val loss + accuracy (shared x, dual y-axis)
+    ax1 = axes[0]
+    ax1.plot(epochs, history["train_loss"], label="Train Loss", color="tab:blue", linewidth=2)
+    ax1.plot(epochs, history["val_loss"], label="Val Loss", color="tab:cyan", linewidth=2)
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.set_title(f"{model_name}: Loss + Accuracy")
+
+    ax1b = ax1.twinx()
+    ax1b.plot(epochs, history["train_acc"], label="Train Acc", color="tab:orange", linestyle="--", linewidth=2)
+    ax1b.plot(epochs, history["val_acc"], label="Val Acc", color="tab:red", linestyle="--", linewidth=2)
+    ax1b.set_ylabel("Accuracy")
+
+    # Single combined legend for subplot 1
+    if history.get("best_epoch") is not None:
+        ax1.axvline(x=history["best_epoch"], color="green", linestyle="--", linewidth=1.5, label=f"Best (epoch {history['best_epoch']})")
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax1b.get_legend_handles_labels()
+    ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc="center right")
+
+    # Graph 2: Validation precision/recall/F1
+    ax2 = axes[1]
+    ax2.plot(epochs, history["val_precision"], label="Val Precision", linewidth=2)
+    ax2.plot(epochs, history["val_recall"], label="Val Recall", linewidth=2)
+    ax2.plot(epochs, history["val_f1"], label="Val F1", linewidth=2)
+    if history.get("val_auprc"):
+        ax2.plot(epochs, history["val_auprc"], label="Val AUPRC", linewidth=2, linestyle="--")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Score")
+    ax2.set_title(f"{model_name}: Val PRF + AUPRC")
+    ax2.set_ylim(0, 1)
+    if history.get("best_epoch") is not None:
+        ax2.axvline(x=history["best_epoch"], color="green", linestyle="--", linewidth=1.5, label=f"Best (epoch {history['best_epoch']})")
+    ax2.legend(loc="best")
+
+    plt.tight_layout()
+    plt.show()
 
 def plot_confusion_matrix_figure(labels, preds, class_names):
     cm = confusion_matrix(labels, preds)

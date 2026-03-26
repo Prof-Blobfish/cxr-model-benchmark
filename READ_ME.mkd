@@ -1,25 +1,124 @@
-Planned models:
-    - CNN: baseline
-        - Local feature extraction with minimal depth (conv -> relu -> pool -> linear)
-        - No sohphistication
-    - ResNet-18: residual learning
-        - Learn residuals instead of full transformations
-        - Skip connections
-        - Enables deeper networks
-    - DenseNet-121: feature reuse
-        - Every layer sees all previous features
-        - Concatenation instead of addition (each layer gets [x0, x1, x2,...] instead of x0 -> x1 -> x2...)
-        - Improve learning with information sharing
-    - EfficientNet-B0: scaling
-        - Balance depth, width, and resolution
-        - Use compound scaling
-        - Optimization of architecture design
-    - MobileNetV2: efficiency
-        - Separate spatial and channel computation
-        - Depthwise separable convolutions
-    - ShuffleNetV2: lightweight/channel shuffling
-        - Split -> process -> shuffle -> merge
-        - Information flow across channels
-    - SqueezeNet: fire modules (squeeze + expand layers)
-        - Minimize params aggressively
-        - Minimalistic extreme (efficiency) baseline
+# Chest X-Ray Disease Detection
+
+This project compares multiple convolutional neural network architectures for binary chest X-ray classification (normal vs abnormal) using the NIH Chest X-ray dataset.
+
+## Project Organization
+
+```
+cxr-disease-detection/
+|- notebooks/
+|  |- 00_data_exploration.ipynb
+|  |- 01_cnn_baseline.ipynb
+|  |- 02_resnet18.ipynb
+|  |- 03_densenet121.ipynb
+|  |- 04_efficientnetb0.ipynb
+|  |- 05_mobilenetv2.ipynb
+|  |- 06_shufflenetv2.ipynb
+|  |- 07_squeezenet.ipynb
+|  |- 08_model_comparison.ipynb
+|- src/
+|  |- config.py
+|  |- data.py
+|  |- models.py
+|  |- train_eval.py
+|  |- utils.py
+|- saved_models/
+|- READ_ME.mkd
+```
+
+## What Each Module Does
+
+- src/config.py
+    - Central training and data configuration.
+    - Contains hyperparameters, split ratios, model output directory, and dataset path.
+
+- src/data.py
+    - Loads metadata CSV and maps image filenames to full paths.
+    - Creates patient-level train, validation, and test splits.
+    - Builds binary target labels and returns PyTorch datasets and dataloaders.
+
+- src/models.py
+    - Contains all model definitions used in the project:
+        - SimpleCNN
+        - ResNet18
+        - DenseNet121
+        - EfficientNetB0
+        - MobileNetV2
+        - ShuffleNetV2
+        - SqueezeNet
+
+- src/train_eval.py
+    - Training loop, validation loop, metric computation, and early stopping behavior.
+    - Saves best checkpoints based on validation F1.
+
+- src/utils.py
+    - Device selection (MPS, CUDA, CPU).
+    - Checkpoint path helper.
+    - Plotting helpers for history and confusion matrix.
+
+## Notebook Workflow
+
+Recommended order:
+
+1. 00_data_exploration.ipynb
+2. 01 through 07 model-specific notebooks
+3. 08_model_comparison.ipynb for side-by-side benchmarking
+
+The comparison notebook follows this flow:
+
+1. Import modules from src.
+2. Load and preprocess NIH metadata and image paths.
+3. Build train, validation, and test dataloaders.
+4. Train each model and save best checkpoint.
+5. Reload best checkpoint and evaluate on test set.
+6. Aggregate metrics and plot comparisons.
+
+## Dataset Setup
+
+Update the dataset path in src/config.py to match your machine.
+
+Current pattern in config.py:
+
+- macOS path (commented)
+- Windows path (active)
+
+Expected dataset root should contain:
+
+- Data_Entry_2017.csv
+- Image files in subfolders (PNG format)
+
+## Model Checkpoints
+
+- Checkpoints are saved into saved_models/.
+- File names are generated with get_model_path(name), which appends .pt automatically.
+- Training uses extension-free names internally and resolves them consistently to .pt paths.
+
+## Environment Notes
+
+- If training runs on CPU unexpectedly, verify the notebook kernel and PyTorch build:
+    - Notebook must use the project virtual environment kernel.
+    - CUDA-enabled PyTorch is required for NVIDIA GPU acceleration.
+
+## Typical Commands
+
+From project root, in your virtual environment:
+
+1. Install dependencies used by notebooks and training code.
+2. Start Jupyter or open notebooks in VS Code.
+3. Run notebooks in order, or jump directly to 08_model_comparison.ipynb once data path is configured.
+
+## Planned Model Set
+
+- SimpleCNN baseline
+- ResNet18
+- DenseNet121
+- EfficientNet-B0
+- MobileNetV2
+- ShuffleNetV2
+- SqueezeNet
+
+## Current Focus
+
+- Cross-platform path handling between macOS and Windows
+- Reliable notebook kernel and GPU usage
+- Consistent model checkpoint naming and loading
