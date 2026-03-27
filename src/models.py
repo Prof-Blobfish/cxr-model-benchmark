@@ -47,24 +47,23 @@ class SimpleCNN(nn.Module):
     # Defines the forward pass of the model, passing the input through the feature extractor and then the classifier to produce the final output logits
 
 class ResNet18(nn.Module):
-    def __init__(self, num_classes=2, pretrained=False, in_channels=1):
+    def __init__(self, num_classes=2, pretrained=True, in_channels=1):
         super().__init__()
 
-        if pretrained:
-            weights = models.ResNet18_Weights.DEFAULT
-        else:
-            weights = None
-        self.model = models.resnet18(weights=weights)
+        self.model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
 
         if in_channels == 1:
-            self.model.conv1 = nn.Conv2d(
+            old_conv = self.model.conv1
+            new_conv = nn.Conv2d(
                 in_channels,
-                self.model.conv1.out_channels,
-                kernel_size=self.model.conv1.kernel_size,
-                stride=self.model.conv1.stride,
-                padding=self.model.conv1.padding,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
                 bias=False,
             )
+            new_conv.weight.data = old_conv.weight.data.sum(dim=1, keepdim=True)
+            self.model.conv1 = new_conv
 
         self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
 
@@ -75,17 +74,20 @@ class DenseNet121(nn.Module):
     def __init__(self, num_classes=2, in_channels=1):
         super().__init__()
 
-        self.model = models.densenet121(weights=None)
+        self.model = models.densenet121(weights=models.DenseNet121_Weights.DEFAULT)
 
-        # Modify first conv layer for grayscale
-        self.model.features.conv0 = nn.Conv2d(
-            in_channels,
-            64,
-            kernel_size=7,
-            stride=2,
-            padding=3,
-            bias=False
-        )
+        if in_channels == 1:
+            old_conv = self.model.features.conv0
+            new_conv = nn.Conv2d(
+                in_channels,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=False
+            )
+            new_conv.weight.data = old_conv.weight.data.sum(dim=1, keepdim=True)
+            self.model.features.conv0 = new_conv
 
         # Replace classifier
         in_features = self.model.classifier.in_features
@@ -99,18 +101,20 @@ class EfficientNetB0(nn.Module):
     def __init__(self, num_classes=2, in_channels=1):
         super().__init__()
 
-        # Load EfficientNet-B0
-        self.model = models.efficientnet_b0(weights=None)
+        self.model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
 
-        # Modify first conv layer for grayscale input
-        self.model.features[0][0] = nn.Conv2d(
-            in_channels,
-            32,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            bias=False
-        )
+        if in_channels == 1:
+            old_conv = self.model.features[0][0]
+            new_conv = nn.Conv2d(
+                in_channels,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=False
+            )
+            new_conv.weight.data = old_conv.weight.data.sum(dim=1, keepdim=True)
+            self.model.features[0][0] = new_conv
 
         # Replace classifier
         in_features = self.model.classifier[1].in_features
@@ -123,18 +127,20 @@ class MobileNetV2(nn.Module):
     def __init__(self, num_classes=2, in_channels=1):
         super().__init__()
 
-        # Load MobileNetV2
-        self.model = models.mobilenet_v2(weights=None)
+        self.model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
 
-        # Modify first convolution layer for grayscale input
-        self.model.features[0][0] = nn.Conv2d(
-            in_channels,
-            32,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            bias=False
-        )
+        if in_channels == 1:
+            old_conv = self.model.features[0][0]
+            new_conv = nn.Conv2d(
+                in_channels,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride,
+                padding=old_conv.padding,
+                bias=False
+            )
+            new_conv.weight.data = old_conv.weight.data.sum(dim=1, keepdim=True)
+            self.model.features[0][0] = new_conv
 
         # Replace classifier
         in_features = self.model.classifier[1].in_features
@@ -147,11 +153,16 @@ class ShuffleNetV2(nn.Module):
     def __init__(self, num_classes=2, in_channels=1):
         super().__init__()
 
-        self.model = models.shufflenet_v2_x1_0(weights=None)
+        self.model = models.shufflenet_v2_x1_0(weights=models.ShuffleNet_V2_X1_0_Weights.DEFAULT)
 
-        self.model.conv1[0] = nn.Conv2d(
-            in_channels, 24, kernel_size=3, stride=2, padding=1, bias=False
-        )
+        if in_channels == 1:
+            old_conv = self.model.conv1[0]
+            new_conv = nn.Conv2d(
+                in_channels, old_conv.out_channels, kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride, padding=old_conv.padding, bias=False
+            )
+            new_conv.weight.data = old_conv.weight.data.sum(dim=1, keepdim=True)
+            self.model.conv1[0] = new_conv
 
         self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
 
@@ -162,16 +173,18 @@ class SqueezeNet(nn.Module):
     def __init__(self, num_classes=2, in_channels=1):
         super().__init__()
 
-        # Load SqueezeNet
-        self.model = models.squeezenet1_0(weights=None)
+        self.model = models.squeezenet1_0(weights=models.SqueezeNet1_0_Weights.DEFAULT)
 
-        # Modify first conv layer for grayscale input
-        self.model.features[0] = nn.Conv2d(
-            in_channels,
-            96,
-            kernel_size=7,
-            stride=2
-        )
+        if in_channels == 1:
+            old_conv = self.model.features[0]
+            new_conv = nn.Conv2d(
+                in_channels,
+                old_conv.out_channels,
+                kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride
+            )
+            new_conv.weight.data = old_conv.weight.data.sum(dim=1, keepdim=True)
+            self.model.features[0] = new_conv
 
         # Replace classifier
         self.model.classifier = nn.Sequential(

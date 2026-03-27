@@ -8,13 +8,15 @@ from typing import List, Optional
 @dataclass
 class Metrics:
     model: str
+    epochs: int
+    batch_size: int
+    image_size: int
     test_loss: float
     accuracy: float
     precision: float
     recall: float
     f1: float
     auprc: float
-    epochs: int
 
 @dataclass
 class History:
