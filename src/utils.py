@@ -1,7 +1,11 @@
 import torch
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from dataclasses import asdict
+from pathlib import Path
+import json
 import config
+from experiement_types import Metrics, History, ModelOutput
 
 import sys
 import os
@@ -24,6 +28,38 @@ def get_device():
 
 def get_model_path(name):
     return config.MODEL_DIR / f"{name}.pt"
+
+def get_experiment_outputs_path(name="experiment_outputs.json"):
+    return config.MODEL_DIR / name
+
+def save_experiment_outputs(experiment_outputs, output_path=None):
+    output_path = Path(output_path) if output_path else get_experiment_outputs_path()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        model_name: {
+            "metrics": asdict(model_output.metrics),
+            "history": asdict(model_output.history),
+        }
+        for model_name, model_output in experiment_outputs.items()
+    }
+
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return output_path
+
+def load_experiment_outputs(output_path=None):
+    output_path = Path(output_path) if output_path else get_experiment_outputs_path()
+    if not output_path.exists():
+        return {}
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    return {
+        model_name: ModelOutput(
+            metrics=Metrics(**model_output["metrics"]),
+            history=History(**model_output["history"]),
+        )
+        for model_name, model_output in payload.items()
+    }
 
 def plot_training_history(history):
     # Find the minimum length among all history lists
