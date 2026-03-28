@@ -48,6 +48,25 @@ Purpose: Catch bugs and bad settings quickly.
 - Confirm loss decreases.
 - Confirm metrics are computed and saved.
 
+Recommended in this repo: run smoke test with persistence verification enabled so save/load paths are validated before long training.
+
+```python
+run_smoke_test(
+	model_name=model_names[0],
+	model_builder=model_builders[0],
+	train_loader=train_loader,
+	val_loader=val_loader,
+	test_loader=test_loader,
+	device=device,
+	smoke_epochs=1,
+	smoke_patience=1,
+	persist_outputs=True,
+	persist_model_name=f"{model_names[0]}-SMOKE",
+)
+```
+
+Use a distinct `-SMOKE` suffix so quick sanity-check outputs do not overwrite full training outputs.
+
 ### Step 1: Baseline Run (1 run)
 
 Purpose: Establish reference behavior.

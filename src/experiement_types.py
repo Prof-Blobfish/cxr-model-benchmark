@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 # Access examples
@@ -28,7 +28,8 @@ class History:
     val_recall: List[float]
     val_f1: List[float]
     val_auprc: List[float]
-    best_epoch: Optional[int]
+    lr: List[float] = field(default_factory=list)
+    best_epoch: Optional[int] = None
 
 @dataclass
 class ModelOutput:

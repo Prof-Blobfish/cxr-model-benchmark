@@ -22,7 +22,9 @@ cxr-disease-detection/
 |  |- models.py
 |  |- train_eval.py
 |  |- utils.py
-|- saved_models/
+|- outputs/
+|  |- models/
+|  |- experiment_outputs/
 |- READ_ME.mkd
 ```
 
@@ -89,9 +91,10 @@ Expected dataset root should contain:
 
 ## Model Checkpoints
 
-- Checkpoints are saved into saved_models/.
+- Checkpoints are saved into outputs/models/.
 - File names are generated with get_model_path(name), which appends .pt automatically.
 - Training uses extension-free names internally and resolves them consistently to .pt paths.
+- Experiment metrics/history artifacts are saved into outputs/experiment_outputs/.
 
 ## Environment Notes
 

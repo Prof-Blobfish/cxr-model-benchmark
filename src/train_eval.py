@@ -15,7 +15,22 @@ def setup_training(model, lr=config.LEARNING_RATE):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    return criterion, optimizer
+    scheduler = None
+    if config.SCHEDULER_ENABLED:
+        if config.SCHEDULER_TYPE == "reduce_on_plateau":
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer=optimizer,
+                mode=config.SCHEDULER_MODE,
+                factor=config.SCHEDULER_FACTOR,
+                patience=config.SCHEDULER_PATIENCE,
+                threshold=config.SCHEDULER_THRESHOLD,
+                threshold_mode=config.SCHEDULER_THRESHOLD_MODE,
+                min_lr=config.SCHEDULER_MIN_LR,
+            )
+        else:
+            raise ValueError(f"Unsupported scheduler type: {config.SCHEDULER_TYPE}")
+
+    return criterion, optimizer, scheduler
     # Utility function to set up the loss function (cross-entropy for classification) and the optimizer (Adam) with the specified learning rate, returning both for use in training and evaluation
 
 def train_one_epoch(model, loader, criterion, optimizer, device, epoch=None, start_time=None, total_epochs=None):
@@ -125,6 +140,7 @@ def train_model(
     val_loader,
     criterion,
     optimizer,
+    scheduler,
     device,
     save_name: str = None,
     patience: int = config.PATIENCE,
@@ -135,7 +151,7 @@ def train_model(
         save_name = config.BEST_MODEL_NAME.replace(".pt", "")
 
     save_path = get_model_path(save_name)
-    config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
 
     history = {
         "train_loss": [],
@@ -146,6 +162,7 @@ def train_model(
         "val_recall": [],
         "val_f1": [],
         "val_auprc": [],
+        "lr": [],
         "best_epoch": None
     }
 
@@ -176,6 +193,12 @@ def train_model(
         history["val_f1"].append(val_f1)
         history["val_auprc"].append(average_precision_score(val_labels, val_probs))
 
+        if scheduler is not None:
+            scheduler.step(val_loss)
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        history["lr"].append(current_lr)
+
         # ETA calculation
         elapsed_time = time.time() - start_time
         avg_epoch_time = elapsed_time / (epoch + 1)
@@ -196,6 +219,7 @@ def train_model(
             print(f"  Val Precision: {val_precision:.4f}")
             print(f"  Val Recall: {val_recall:.4f} | Val F1: {val_f1:.4f}")
             print(f"  Val AUPRC: {val_auprc:.4f}")
+            print(f"  LR: {current_lr:.6g}")
             print("-" * 60)
             best_auprc = val_auprc
             best_val_loss = val_loss
@@ -207,6 +231,7 @@ def train_model(
         else:
             patience_counter += 1
             print(f"No improvement. Patience: {patience_counter}/{patience}")
+            print(f"  LR: {current_lr:.6g}")
             print("-" * 60)
 
         if live_plot:

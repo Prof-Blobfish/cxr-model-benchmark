@@ -32,10 +32,22 @@ PATIENCE = 7
 LEARNING_RATE = 1e-4
 RANDOM_SEED = 42
 
+# Learning-rate scheduler (toggle + params)
+SCHEDULER_ENABLED = True
+SCHEDULER_TYPE = "reduce_on_plateau"
+SCHEDULER_MODE = "min"
+SCHEDULER_FACTOR = 0.5
+SCHEDULER_PATIENCE = 2
+SCHEDULER_THRESHOLD = 1e-4
+SCHEDULER_THRESHOLD_MODE = "rel"
+SCHEDULER_MIN_LR = 1e-6
+
 TRAIN_SPLIT = 0.7
 VAL_SPLIT = 0.15
 
-MODEL_DIR = PROJECT_ROOT / "saved_models"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+MODEL_DIR = OUTPUTS_DIR / "models"
+EXPERIMENT_OUTPUTS_DIR = OUTPUTS_DIR / "experiment_outputs"
 BEST_MODEL_NAME = "best_simple_cnn.pt"
 
 # Dataset path from environment variable

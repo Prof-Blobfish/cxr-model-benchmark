@@ -27,6 +27,7 @@ env/
 
 #Ignore saved models directory
 saved_models/
+outputs/
 
 #Environmental variables
 .env

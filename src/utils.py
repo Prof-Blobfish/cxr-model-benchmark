@@ -30,7 +30,7 @@ def get_model_path(name):
     return config.MODEL_DIR / f"{name}.pt"
 
 def get_experiment_outputs_path(name="experiment_outputs.json"):
-    return config.MODEL_DIR / name
+    return config.EXPERIMENT_OUTPUTS_DIR / name
 
 def save_experiment_outputs(experiment_outputs, output_path=None):
     output_path = Path(output_path) if output_path else get_experiment_outputs_path()
@@ -112,7 +112,7 @@ import matplotlib.pyplot as plt
 def plot_training_history_compact(history, model_name="Model"):
     epochs = range(1, len(history["train_loss"]) + 1)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(20, 5))
 
     # Graph 1: Train/Val loss + accuracy (shared x, dual y-axis)
     ax1 = axes[0]
@@ -136,18 +136,56 @@ def plot_training_history_compact(history, model_name="Model"):
 
     # Graph 2: Validation precision/recall/F1
     ax2 = axes[1]
-    ax2.plot(epochs, history["val_precision"], label="Val Precision", linewidth=2)
-    ax2.plot(epochs, history["val_recall"], label="Val Recall", linewidth=2)
-    ax2.plot(epochs, history["val_f1"], label="Val F1", linewidth=2)
+    val_series = [
+        history["val_precision"],
+        history["val_recall"],
+        history["val_f1"],
+    ]
+    val_series_labels = ["Val Precision", "Val Recall", "Val F1"]
+
     if history.get("val_auprc"):
-        ax2.plot(epochs, history["val_auprc"], label="Val AUPRC", linewidth=2, linestyle="--")
+        val_series.append(history["val_auprc"])
+        val_series_labels.append("Val AUPRC")
+
+    for series, label in zip(val_series, val_series_labels):
+        linestyle = "--" if label == "Val AUPRC" else "-"
+        ax2.plot(epochs, series, label=label, linewidth=2, linestyle=linestyle)
+
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Score")
     ax2.set_title(f"{model_name}: Val PRF + AUPRC")
-    ax2.set_ylim(0, 1)
+
+    # Dynamic y-limits so small metric differences are visually clearer.
+    all_val_values = [value for series in val_series for value in series]
+    min_score = min(all_val_values)
+    max_score = max(all_val_values)
+    score_range = max_score - min_score
+    padding = max(0.01, 0.15 * score_range) if score_range > 0 else 0.02
+    ymin = max(0.0, min_score - padding)
+    ymax = min(1.0, max_score + padding)
+    if ymin == ymax:
+        ymin = max(0.0, ymin - 0.01)
+        ymax = min(1.0, ymax + 0.01)
+    ax2.set_ylim(ymin, ymax)
+
     if history.get("best_epoch") is not None:
         ax2.axvline(x=history["best_epoch"], color="green", linestyle="--", linewidth=1.5, label=f"Best (epoch {history['best_epoch']})")
     ax2.legend(loc="best")
+
+    # Graph 3: Learning-rate schedule
+    ax3 = axes[2]
+    lr_history = history.get("lr", [])
+    if lr_history:
+        lr_epochs = range(1, len(lr_history) + 1)
+        ax3.plot(lr_epochs, lr_history, label="Learning Rate", color="tab:purple", linewidth=2)
+        if history.get("best_epoch") is not None:
+            ax3.axvline(x=history["best_epoch"], color="green", linestyle="--", linewidth=1.5, label=f"Best (epoch {history['best_epoch']})")
+        ax3.legend(loc="best")
+    else:
+        ax3.text(0.5, 0.5, "No LR history", ha="center", va="center", transform=ax3.transAxes)
+    ax3.set_xlabel("Epoch")
+    ax3.set_ylabel("LR")
+    ax3.set_title(f"{model_name}: LR Schedule")
 
     plt.tight_layout()
     plt.show()
