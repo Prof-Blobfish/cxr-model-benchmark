@@ -5,6 +5,7 @@ from sklearn.metrics import average_precision_score
 from train_eval import evaluate, setup_training, train_model
 from utils import (
     get_model_path,
+    get_training_checkpoint_path,
     get_experiment_outputs_path,
     load_experiment_outputs,
     save_experiment_outputs,
@@ -20,13 +21,21 @@ def run_training_pipeline(
     test_loader,
     device,
     live_plot=False,
+    resume_from_checkpoint=None,
 ):
     print(f"\n=== Training {model_name} ===")
     model = model_builder().to(device)
 
-    criterion, optimizer, scheduler = setup_training(model)
+    criterion, optimizer, scheduler, training_control = setup_training(
+        model,
+        model_name=model_name,
+    )
+
+    if resume_from_checkpoint is None:
+        resume_from_checkpoint = config.AUTO_RESUME_TRAINING
     
     save_name = f"best_{model_name.lower().replace('-', '_')}"
+    checkpoint_path = get_training_checkpoint_path(save_name)
 
     history = train_model(
         model=model,
@@ -35,8 +44,11 @@ def run_training_pipeline(
         criterion=criterion,
         optimizer=optimizer,
         scheduler=scheduler,
+        training_control=training_control,
         device=device,
         save_name=save_name,
+        checkpoint_path=checkpoint_path,
+        resume_from_checkpoint=resume_from_checkpoint,
         live_plot=live_plot,
         live_plot_model_name=model_name,
     )
@@ -122,6 +134,7 @@ def run_smoke_test(
             test_loader=test_loader,
             device=device,
             live_plot=live_plot,
+            resume_from_checkpoint=False,
         )
 
         if persist_outputs:

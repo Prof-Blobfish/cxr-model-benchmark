@@ -29,6 +29,10 @@ def get_device():
 def get_model_path(name):
     return config.MODEL_DIR / f"{name}.pt"
 
+def get_training_checkpoint_path(name):
+    checkpoint_dir = config.CHECKPOINTS_DIR / name
+    return checkpoint_dir / "latest.pt"
+
 def get_experiment_outputs_path(name="experiment_outputs.json"):
     return config.EXPERIMENT_OUTPUTS_DIR / name
 
@@ -175,11 +179,36 @@ def plot_training_history_compact(history, model_name="Model"):
     # Graph 3: Learning-rate schedule
     ax3 = axes[2]
     lr_history = history.get("lr", [])
-    if lr_history:
+    lr_backbone = history.get("lr_backbone", [])
+    lr_head = history.get("lr_head", [])
+    frozen_history = history.get("backbone_frozen", [])
+
+    if lr_backbone or lr_head:
+        if lr_backbone:
+            ax3.plot(range(1, len(lr_backbone) + 1), lr_backbone, label="Backbone LR", color="tab:purple", linewidth=2)
+        if lr_head:
+            ax3.plot(range(1, len(lr_head) + 1), lr_head, label="Head LR", color="tab:pink", linewidth=2)
+    elif lr_history:
         lr_epochs = range(1, len(lr_history) + 1)
         ax3.plot(lr_epochs, lr_history, label="Learning Rate", color="tab:purple", linewidth=2)
+
+    if frozen_history:
+        span_start = None
+        for index, is_frozen in enumerate(frozen_history, start=1):
+            if is_frozen and span_start is None:
+                span_start = index - 0.5
+            if not is_frozen and span_start is not None:
+                ax3.axvspan(span_start, index - 0.5, color="gray", alpha=0.12, label="Backbone Frozen" if span_start == 0.5 else None)
+                span_start = None
+        if span_start is not None:
+            ax3.axvspan(span_start, len(frozen_history) + 0.5, color="gray", alpha=0.12, label="Backbone Frozen" if span_start == 0.5 else None)
+
+    if lr_backbone or lr_head or lr_history:
         if history.get("best_epoch") is not None:
             ax3.axvline(x=history["best_epoch"], color="green", linestyle="--", linewidth=1.5, label=f"Best (epoch {history['best_epoch']})")
+        positive_lr_values = [value for value in (lr_backbone + lr_head + lr_history) if value > 0]
+        if positive_lr_values:
+            ax3.set_yscale("log")
         ax3.legend(loc="best")
     else:
         ax3.text(0.5, 0.5, "No LR history", ha="center", va="center", transform=ax3.transAxes)

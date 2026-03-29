@@ -29,6 +29,9 @@ class History:
     val_f1: List[float]
     val_auprc: List[float]
     lr: List[float] = field(default_factory=list)
+    lr_backbone: List[float] = field(default_factory=list)
+    lr_head: List[float] = field(default_factory=list)
+    backbone_frozen: List[bool] = field(default_factory=list)
     best_epoch: Optional[int] = None
 
 @dataclass
