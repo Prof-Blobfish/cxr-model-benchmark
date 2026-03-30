@@ -41,18 +41,18 @@ MODEL_TRAINING_CONFIGS = {
         "freeze_backbone_epochs": 0,
     },
     "ResNet18": {
+        "backbone_lr": 5e-5,
+        "head_lr": 5e-4,
+        "freeze_backbone_epochs": 2,
+    },
+    "DenseNet121": {
         "backbone_lr": 3e-5,
         "head_lr": 3e-4,
         "freeze_backbone_epochs": 2,
     },
-    "DenseNet121": {
-        "backbone_lr": 2e-5,
-        "head_lr": 2e-4,
-        "freeze_backbone_epochs": 2,
-    },
     "EfficientNet-B0": {
-        "backbone_lr": 2e-5,
-        "head_lr": 2e-4,
+        "backbone_lr": 3e-5,
+        "head_lr": 3e-4,
         "freeze_backbone_epochs": 2,
     },
     "MobileNetV2": {
@@ -76,11 +76,11 @@ MODEL_TRAINING_CONFIGS = {
 SCHEDULER_ENABLED = True
 SCHEDULER_TYPE = "reduce_on_plateau"
 SCHEDULER_MODE = "min"
-SCHEDULER_FACTOR = 0.5
-SCHEDULER_PATIENCE = 2
-SCHEDULER_THRESHOLD = 1e-4
+SCHEDULER_FACTOR = 0.3
+SCHEDULER_PATIENCE = 4
+SCHEDULER_THRESHOLD = 1e-5
 SCHEDULER_THRESHOLD_MODE = "rel"
-SCHEDULER_MIN_LR = 1e-6
+SCHEDULER_MIN_LR = 1e-7
 
 TRAIN_SPLIT = 0.7
 VAL_SPLIT = 0.15
