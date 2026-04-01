@@ -1,242 +1,169 @@
-# Model Tuning Guide (Beginner-Friendly)
+# Model Tuning Guide
 
-This guide is a practical playbook for tuning each model in this project in a fair, repeatable way.
+Practical tuning playbook for this repository's current training system.
 
-## 1) Core Goal
+## 1. Objective
 
 For each architecture (SimpleCNN, ResNet18, DenseNet121, EfficientNet-B0, MobileNetV2, ShuffleNetV2, SqueezeNet):
 
-1. Train with a strong baseline.
-2. Tune using validation metrics only.
-3. Lock the best config.
-4. Evaluate once on test.
-5. Compare models fairly.
+1. Tune on validation metrics only.
+2. Select the best checkpoint using validation AUPRC (with loss sanity gate).
+3. Evaluate test set once per locked configuration.
+4. Compare models under a shared, reproducible protocol.
 
-## 2) Fair Comparison Rules (Keep These Constant)
+## 2. What Must Stay Constant for Fairness
 
-Keep these the same for all models:
+Keep the following fixed across all models:
 
-- Same train/val/test split.
-- Same preprocessing and normalization.
-- Same augmentation policy (unless intentionally testing augmentation).
+- Patient-level train/val/test split.
+- Image preprocessing/transforms policy.
+- Metric definitions.
+- Training budget policy (same number of tuning runs per model).
+- Selection logic (best validation AUPRC with the same early-stopping rule).
+
+Only model family and model-specific optimization settings should change.
+
+## 3. Current Training Behavior in This Repo
+
+### Optimizer and parameter groups
+
+- Optimizer: Adam.
+- For pretrained backbones, training uses two parameter groups when available:
+  - Backbone LR (lower).
+  - Head LR (higher).
+- Early epochs may freeze the backbone (`freeze_backbone_epochs`) and train the head only.
+
+### Scheduler (active default)
+
+- Scheduler type: `warmup_cosine`.
+- Phase 1: Linear warmup from `SCHEDULER_WARMUP_START_FACTOR * base_lr` to base LR.
+- Phase 2: Cosine annealing down to `SCHEDULER_MIN_LR`.
+
+Notes:
+
+- LR can rise in the first 1-2 epochs by design (warmup).
+- Scheduler stepping starts after frozen-only epochs so LR decay aligns with fine-tuning.
+
+### Early stopping and best model criteria
+
+- Early stopping patience: `PATIENCE`.
+- Best checkpoint requires:
+  - Improved validation AUPRC, and
+  - Validation loss no worse than best loss + 0.01.
+
+This protects against selecting high-AUPRC but clearly unstable loss spikes.
+
+## 4. High-Impact Tuning Knobs (Priority Order)
+
+Tune in this order for best payoff:
+
+1. LR scale (backbone/head or single LR).
+2. Warmup shape (`SCHEDULER_WARMUP_EPOCHS`, `SCHEDULER_WARMUP_START_FACTOR`).
+3. Freeze duration (`freeze_backbone_epochs` for pretrained models).
+4. Early-stopping patience (`PATIENCE`).
+5. Batch size (`BATCH_SIZE`) if hardware allows.
+
+## 5. Recommended Starting Ranges
+
+Use these as practical search ranges.
+
+### SimpleCNN (from scratch)
+
+- `lr`: 2e-4 to 8e-4.
+- Warmup epochs: 1 to 2.
+- Warmup start factor: 0.3 to 0.7.
+
+### Pretrained models (layer-wise)
+
+- `head_lr`: 2e-4 to 8e-4.
+- `backbone_lr`: 1e-5 to 8e-5.
+- Ratio target: `head_lr` about 5x to 15x `backbone_lr`.
+- `freeze_backbone_epochs`: 0 to 1 (usually avoid long freezes).
+
+### Global controls
+
+- `PATIENCE`: 6 to 10.
+- `NUM_EPOCHS`: long enough for one warmup+decay cycle (for example 20-40).
+
+## 6. Practical Tuning Loop (Per Model)
+
+1. Smoke test (1 epoch, patience 1).
+2. Baseline run (current default config).
+3. Coarse LR sweep (3-4 runs).
+4. Warmup/freeze refinement (2-3 runs around best LR setting).
+5. Lock config and run final training.
+6. Evaluate test once, then persist metrics/history.
+
+## 7. Diagnosis Guide
+
+### Pattern A: LR drops/decays too late and overfitting already started
+
+Actions:
+
+1. Shorten warmup (`SCHEDULER_WARMUP_EPOCHS`: 2 -> 1).
+2. Start closer to base LR (`SCHEDULER_WARMUP_START_FACTOR`: 0.2 -> 0.5).
+3. Reduce/disable initial backbone freeze (`freeze_backbone_epochs`: 1 -> 0).
+
+### Pattern B: Validation is noisy and unstable early
+
+Actions:
+
+1. Keep warmup at 2 epochs.
+2. Lower start factor (0.2 to 0.3).
+3. Slightly lower head LR.
+
+### Pattern C: Underfitting (train and val both low)
+
+Actions:
+
+1. Increase LR modestly.
+2. Increase epochs.
+3. Reduce regularization/augmentation intensity.
+
+### Pattern D: Good AUPRC but poor recall
+
+Actions:
+
+1. Calibrate decision threshold on validation set.
+2. Track thresholded metrics separately from ranking metrics (AUPRC).
+
+## 8. Suggested Run Budget
+
+Balanced budget per model:
+
+1. Smoke test: 1 run.
+2. Baseline: 1 run.
+3. Coarse search: 3 runs.
+4. Fine search: 2 runs.
+5. Final locked run: 1 run.
+
+Total: 8 runs/model.
+
+## 9. Logging Template (Use Every Run)
+
+- Model name.
+- Run ID/date.
+- `NUM_EPOCHS`, `PATIENCE`, `BATCH_SIZE`.
+- LR settings (`lr` or `backbone_lr/head_lr`).
+- Freeze epochs.
+- Warmup settings.
+- Best validation AUPRC/F1/Recall.
+- Best epoch.
+- Test metrics (final locked run only).
+- Notes on what changed and why.
+
+## 10. Notebook Workflow Tips for This Repo
+
+- Use `run_smoke_test(...)` before long runs.
+- For clean comparisons after scheduler/strategy changes, start fresh with `resume_from_checkpoint=False`.
+- Rebuild plots from `outputs/experiment_outputs/experiment_outputs.json` after each locked run.
+
+## 11. Final Comparison Checklist
+
+- Same data split and preprocessing across models.
 - Same metric definitions.
-- Same early-stopping rule.
-- Same tuning budget per model (for example, 8-12 runs each).
-- Same hardware conditions where possible.
-
-Only architecture and architecture-specific hyperparameters should differ.
-
-## 3) Metrics to Monitor
-
-For class-imbalanced medical classification, track at least:
-
-- Primary selection metric: Validation AUPRC.
-- Secondary metrics: Validation F1, recall, precision.
-- Stability metric: Validation loss.
-- Efficiency metrics: Time per epoch, samples/sec, VRAM usage.
-
-Use validation metrics to pick configurations.
-Never pick based on test metrics.
-
-## 4) Conventional Tuning Pipeline (Per Model)
-
-### Step 0: Smoke Test (1 short run)
-
-Purpose: Catch bugs and bad settings quickly.
-
-- 1-3 epochs only.
-- Confirm loss decreases.
-- Confirm metrics are computed and saved.
-
-Recommended in this repo: run smoke test with persistence verification enabled so save/load paths are validated before long training.
-
-```python
-run_smoke_test(
-	model_name=model_names[0],
-	model_builder=model_builders[0],
-	train_loader=train_loader,
-	val_loader=val_loader,
-	test_loader=test_loader,
-	device=device,
-	smoke_epochs=1,
-	smoke_patience=1,
-	persist_outputs=True,
-	persist_model_name=f"{model_names[0]}-SMOKE",
-)
-```
-
-Use a distinct `-SMOKE` suffix so quick sanity-check outputs do not overwrite full training outputs.
-
-### Step 1: Baseline Run (1 run)
-
-Purpose: Establish reference behavior.
-
-Start with:
-
-- Optimizer: AdamW.
-- Scheduler: OneCycleLR or cosine with warmup.
-- Mixed precision (AMP): enabled.
-- Early stopping patience: 5-8.
-- Gradient clipping: 1.0.
-- Class imbalance handling: weighted loss or weighted sampler.
-
-### Step 2: Coarse Search (4-6 runs)
-
-Purpose: Find good region quickly.
-
-Tune first:
-
-- Learning rate (largest impact).
-- Batch size (largest that fits VRAM safely).
-- Weight decay.
-
-Keep a small grid (example):
-
-- LR max: 3e-4, 1e-3
-- Weight decay: 1e-4, 1e-3
-- Dropout: 0.2, 0.3 (if used)
-
-### Step 3: Fine Search (3-6 runs)
-
-Purpose: Refine around best coarse config.
-
-- LR: best x 0.5, best x 1.0, best x 1.5
-- Weight decay: best x 0.5, best x 1.0
-- Optional: one image-size increase if budget allows
-
-### Step 4: Lock and Evaluate (1 run)
-
-- Freeze chosen config.
-- Retrain with full planned epochs and early stopping.
-- Evaluate once on test.
-- Save model, history, and metrics.
-
-## 5) Should All Models Start Exactly the Same?
-
-Use the same framework, not identical values.
-
-Same framework:
-
-- Same optimizer family.
-- Same scheduler family.
-- Same tuning pipeline and run budget.
-- Same evaluation protocol.
-
-Different model-specific values are normal:
-
-- Learning rate sweet spot differs.
-- Weight decay may differ.
-- Batch size may differ due to memory footprint.
-- Dropout relevance differs by architecture.
-
-## 6) How to Decide What to Adjust Next
-
-Use training and validation behavior after each run.
-
-### If training loss barely improves
-
-Likely issue: under-optimization.
-
-Try:
-
-1. Increase LR slightly.
-2. Improve scheduler (OneCycle/cosine).
-3. Train longer.
-4. Reduce too-strong regularization.
-
-### If training improves but validation plateaus or worsens
-
-Likely issue: overfitting.
-
-Try:
-
-1. Increase augmentation strength slightly.
-2. Increase weight decay.
-3. Use earlier stopping.
-4. Increase dropout modestly (if architecture uses it).
-
-### If loss is unstable or diverges
-
-Likely issue: LR too high or unstable updates.
-
-Try:
-
-1. Lower LR.
-2. Add/keep gradient clipping.
-3. Verify normalization and labels.
-4. Reduce augmentation severity temporarily.
-
-### If metrics are decent but training is too slow
-
-Likely issue: throughput bottleneck.
-
-Try:
-
-1. Increase DataLoader workers.
-2. Use pin_memory and persistent_workers.
-3. Enable AMP.
-4. Increase batch size if VRAM allows.
-
-### If accuracy is high but recall/AUPRC is poor
-
-Likely issue: class imbalance or threshold behavior.
-
-Try:
-
-1. Weighted loss or weighted sampling.
-2. Tune decision threshold on validation set.
-3. Prioritize AUPRC/F1 over accuracy for selection.
-
-## 7) Suggested Run Budget Per Model
-
-A practical beginner budget:
-
-1. Smoke test: 1 run
-2. Baseline: 1 run
-3. Coarse search: 4 runs
-4. Fine search: 3 runs
-5. Final locked run: 1 run
-
-Total: about 10 runs per model.
-
-If this is too expensive, do 6-7 runs per model by shrinking coarse/fine counts.
-
-## 8) Minimal Experiment Log Template
-
-Record this for every run:
-
-- Model:
-- Run ID:
-- Date:
-- LR:
-- Batch size:
-- Weight decay:
-- Scheduler:
-- Epochs trained:
-- Best validation AUPRC:
-- Best validation F1:
-- Test AUPRC (only final locked run):
-- Time per epoch:
-- Notes (what changed and why):
-
-This avoids guessing later and makes comparisons objective.
-
-## 9) Beginner Sequence for This Project
-
-Recommended order:
-
-1. Tune SimpleCNN first to learn workflow cheaply.
-2. Tune ResNet18 next as baseline transfer model.
-3. Then DenseNet121 and EfficientNet-B0.
-4. Then MobileNetV2, ShuffleNetV2, SqueezeNet for efficiency tradeoffs.
-5. Compare all locked final runs in one report.
-
-## 10) Final Checklist Before Comparing Models
-
-- All models tuned with same budget policy.
-- Same split and preprocessing.
-- Same primary selection metric (validation AUPRC).
-- Test set used only once per finalized config.
-- Results include both quality and efficiency.
-
-If all items are true, your comparison is strong and publishable-quality for a first ML benchmark project.
+- Same run-budget policy.
+- Validation-only tuning decisions.
+- Test set touched once per locked config.
+
+If all are true, the benchmark comparison is methodologically strong.

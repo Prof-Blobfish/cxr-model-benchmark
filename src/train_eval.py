@@ -197,6 +197,34 @@ def setup_training(model, model_name=None, lr=config.LEARNING_RATE):
                 threshold_mode=config.SCHEDULER_THRESHOLD_MODE,
                 min_lr=config.SCHEDULER_MIN_LR,
             )
+        elif config.SCHEDULER_TYPE == "warmup_cosine":
+            total_epochs = max(1, int(config.NUM_EPOCHS))
+            warmup_epochs = int(getattr(config, "SCHEDULER_WARMUP_EPOCHS", 0))
+            warmup_epochs = max(0, min(warmup_epochs, total_epochs - 1))
+
+            if warmup_epochs > 0:
+                warmup_scheduler = optim.lr_scheduler.LinearLR(
+                    optimizer=optimizer,
+                    start_factor=getattr(config, "SCHEDULER_WARMUP_START_FACTOR", 0.2),
+                    end_factor=1.0,
+                    total_iters=warmup_epochs,
+                )
+                cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer=optimizer,
+                    T_max=max(1, total_epochs - warmup_epochs),
+                    eta_min=config.SCHEDULER_MIN_LR,
+                )
+                scheduler = optim.lr_scheduler.SequentialLR(
+                    optimizer=optimizer,
+                    schedulers=[warmup_scheduler, cosine_scheduler],
+                    milestones=[warmup_epochs],
+                )
+            else:
+                scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer=optimizer,
+                    T_max=total_epochs,
+                    eta_min=config.SCHEDULER_MIN_LR,
+                )
         else:
             raise ValueError(f"Unsupported scheduler type: {config.SCHEDULER_TYPE}")
 
@@ -348,7 +376,10 @@ def train_model(
                 optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
                 scheduler_state_dict = checkpoint.get("scheduler_state_dict")
                 if scheduler is not None and scheduler_state_dict is not None:
-                    scheduler.load_state_dict(scheduler_state_dict)
+                    try:
+                        scheduler.load_state_dict(scheduler_state_dict)
+                    except Exception:
+                        print("Warning: checkpoint scheduler state is incompatible with current scheduler config; using fresh scheduler state.")
 
                 history = checkpoint_history
                 best_auprc = float(checkpoint.get("best_auprc", best_auprc))
@@ -419,9 +450,24 @@ def train_model(
         history["val_auprc"].append(average_precision_score(val_labels, val_probs))
         history["backbone_frozen"].append(training_control.get("backbone_frozen", False))
 
+        val_auprc = history["val_auprc"][-1]
+
+        scheduler_monitor = getattr(config, "SCHEDULER_MONITOR", "val_loss")
+        if scheduler_monitor == "val_auprc":
+            scheduler_metric = val_auprc
+        elif scheduler_monitor == "val_f1":
+            scheduler_metric = val_f1
+        elif scheduler_monitor == "val_acc":
+            scheduler_metric = val_acc
+        else:
+            scheduler_metric = val_loss
+
         scheduler_ready = scheduler is not None and epoch + 1 > freeze_backbone_epochs
         if scheduler_ready:
-            scheduler.step(val_loss)
+            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(scheduler_metric)
+            else:
+                scheduler.step()
 
         current_lrs = [group["lr"] for group in optimizer.param_groups]
         history["lr"].append(max(current_lrs))
@@ -442,8 +488,6 @@ def train_model(
         if epoch == 0:
             total_seconds = int(avg_epoch_time * config.NUM_EPOCHS)
             total_eta_str = time.strftime('%H:%M:%S', time.gmtime(total_seconds))
-
-        val_auprc = history["val_auprc"][-1]
 
         if (val_auprc > best_auprc) and (val_loss <= best_val_loss + 0.01):
             print(f"Epoch {epoch + 1}/{config.NUM_EPOCHS} | ETA (Remaining): {eta_str} | Total ETA: {total_eta_str if total_eta_str else '...'}")
