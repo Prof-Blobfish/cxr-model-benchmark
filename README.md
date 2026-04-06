@@ -2,7 +2,7 @@
 
 Benchmarking framework for binary chest X-ray classification (normal vs abnormal) on the NIH Chest X-ray dataset.
 
-The project compares a custom baseline CNN and several pretrained torchvision backbones using a shared data split, shared evaluation metrics, and a consistent training pipeline.
+The project compares 8 pretrained torchvision backbones organized into three families — heavy, midweight, and lightweight — using a shared data split, shared evaluation metrics, and a consistent training pipeline.
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ python -m venv .venv
 
 ```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install jupyter pandas scikit-learn matplotlib seaborn python-dotenv
+pip install jupyter pandas scikit-learn matplotlib seaborn python-dotenv tdqm
 ```
 
 3. Create a .env file in the repository root.
@@ -28,7 +28,7 @@ DATASET_PATH=C:/path/to/NIH_Chest_X_Ray
 
 4. Run the full benchmark notebook.
 
-- Open notebooks/08_model_comparison.ipynb
+- Open notebooks/09_model_comparison.ipynb
 - Select the project kernel (.venv)
 - Run all cells in order
 
@@ -42,14 +42,15 @@ cxr-model-benchmark/
     notebooks/
         (OLD)_cnn_baseline.ipynb
         00_data_exploration.ipynb
-        01_cnn_baseline.ipynb
-        02_resnet18.ipynb
-        03_densenet121.ipynb
-        04_efficientnetb0.ipynb
-        05_mobilenetv2.ipynb
-        06_shufflenetv2.ipynb
-        07_squeezenet.ipynb
-        08_model_comparison.ipynb
+        01_densenet121.ipynb
+        02_efficientnetb0.ipynb
+        03_googlenet.ipynb
+        04_resnet18.ipynb
+        05_vgg11.ipynb
+        06_mobilenetv2.ipynb
+        07_shufflenetv2.ipynb
+        08_squeezenet.ipynb
+        09_model_comparison.ipynb
     src/
         config.py
         data.py
@@ -62,21 +63,23 @@ cxr-model-benchmark/
         checkpoints/
             best_densenet121/latest.pt
             best_efficientnet_b0/latest.pt
+            best_googlenet/latest.pt
             best_mobilenetv2/latest.pt
             best_resnet18/latest.pt
             best_shufflenetv2/latest.pt
-            best_simplecnn/latest.pt
             best_squeezenet/latest.pt
+            best_vgg11/latest.pt
         experiment_outputs/
             experiment_outputs.json
         models/
             best_densenet121.pt
             best_efficientnet_b0.pt
+            best_googlenet.pt
             best_mobilenetv2.pt
             best_resnet18.pt
             best_shufflenetv2.pt
-            best_simplecnn.pt
             best_squeezenet.pt
+            best_vgg11.pt
 ```
 
 ## Training System Summary
@@ -90,23 +93,64 @@ cxr-model-benchmark/
 
 ### Models benchmarked
 
-- SimpleCNN (trained from scratch)
-- ResNet18
+Models are organized into three families for tuning and comparison:
+
+**Heavy pretrained**
 - DenseNet121
 - EfficientNet-B0
+- GoogLeNet
+
+**Midweight pretrained**
+- ResNet18
+- VGG11
+
+**Lightweight pretrained**
 - MobileNetV2
 - ShuffleNetV2
 - SqueezeNet
 
-All pretrained models are adapted to grayscale input and 2 output classes.
+All models use pretrained ImageNet weights and are adapted to single-channel (grayscale) input and 2 output classes by summing the RGB weights of the first convolutional layer.
+
+### DataLoader performance
+
+- `pin_memory=True` — uses page-locked host memory for faster CPU→GPU transfers
+- `persistent_workers=True` — worker processes are kept alive across epochs to avoid per-epoch spawn overhead
+- `prefetch_factor=4` — each worker pre-loads 4 batches ahead of consumption
+- `non_blocking=True` — tensor transfers to GPU are overlapped with compute when pinned memory is active
+- All flags respect `NUM_WORKERS`: persistent workers and prefetch are silently skipped when `NUM_WORKERS=0`
+
+Relevant config keys: `PIN_MEMORY`, `PERSISTENT_WORKERS`, `PREFETCH_FACTOR`, `NUM_WORKERS`
+
+### GPU throughput features
+
+Both features are CUDA-only and silently no-op on CPU.
+
+**Automatic Mixed Precision (AMP)**
+
+- Runs forward/backward passes under `torch.autocast` in reduced precision
+- Supports two modes configurable via `AMP_DTYPE`:
+    - `bf16` (default) — numerically stable, no grad scaler needed
+    - `fp16` — fastest on older hardware, requires `GradScaler` (auto-enabled via `AMP_USE_GRAD_SCALER`)
+- Applied consistently to both training and validation passes
+- Reduces activation memory, allowing larger batch sizes
+
+**channels_last memory format**
+
+- Stores image tensors in `NHWC`-style physical layout rather than default `NCHW`
+- Improves convolution throughput on modern NVIDIA GPUs via better memory access patterns
+- Applied to both the model and all incoming image batches at transfer time
+- Only affects 4D image tensors; other tensor shapes are unaffected
+
+Relevant config keys: `AMP_ENABLED`, `AMP_DTYPE`, `AMP_USE_GRAD_SCALER`, `CHANNELS_LAST_ENABLED`
 
 ### Optimization strategy
 
-- Optimizer: Adam
+- Optimizer: AdamW
+- Weight decay applied only to non-norm, non-bias parameters (decay/no-decay parameter split)
 - Model-aware parameter groups when available:
     - Backbone LR (lower)
     - Head LR (higher)
-- Optional temporary backbone freezing at the start of training
+- Optional temporary backbone freezing at the start of training (`freeze_backbone_epochs`)
 
 ### Scheduler (current)
 
@@ -117,6 +161,19 @@ Default scheduler is Warmup + Cosine Annealing:
 
 The previous plateau scheduler path still exists in code but is not the active default.
 
+### Runtime telemetry
+
+- Live VRAM stats appear in training progress bars when `LIVE_VRAM_METRICS=True`
+- Format: `VRAM a/r/p: X.XXG(pct%)/X.XXG(pct%)/X.XXG(pct%)`
+    - **a** = currently allocated by live tensors
+    - **r** = reserved by PyTorch caching allocator (allocated + cached blocks)
+    - **p** = peak allocated seen so far this epoch
+- VRAM stats are updated every `VRAM_METRIC_UPDATE_INTERVAL` batches
+- Peak % is recorded per epoch in training history
+- Peak memory stats are reset at the start of each epoch so the peak reflects that epoch only
+
+Relevant config keys: `LIVE_VRAM_METRICS`, `VRAM_METRIC_UPDATE_INTERVAL`
+
 ### Early stopping and selection
 
 - Early stopping uses PATIENCE
@@ -126,7 +183,7 @@ The previous plateau scheduler path still exists in code but is not the active d
 ## Key Files
 
 - src/config.py
-    - Central config: data path, hyperparameters, model-specific training strategy, scheduler settings, directories
+    - Central config: data path, hyperparameters, model-specific training strategy, scheduler settings, DataLoader performance flags, GPU throughput settings (AMP, channels_last), VRAM telemetry, directories
 - src/data.py
     - Metadata loading, patient split, label creation, transforms, DataLoader construction
 - src/models.py
@@ -211,7 +268,13 @@ run_all_models()
 - CUDA not detected
     - Verify PyTorch CUDA build and active kernel/interpreter
 - Out-of-memory during training
-    - Lower BATCH_SIZE in src/config.py
+    - Lower `BATCH_SIZE` in src/config.py
+    - If AMP is disabled, enable it (`AMP_ENABLED = True`, `AMP_DTYPE = "bf16"`) to reduce activation memory
+- AMP instability or NaN losses
+    - Switch `AMP_DTYPE` from `bf16` to `fp16` and ensure `AMP_USE_GRAD_SCALER = True`
+    - If instability persists, set `AMP_ENABLED = False` to fall back to full precision
+- channels_last errors or unexpected output shapes
+    - Disable `CHANNELS_LAST_ENABLED` — some custom layers may not support NHWC layout
 - Resume issues after scheduler-type changes
     - Start fresh runs (resume disabled) for clean LR-history comparisons
 

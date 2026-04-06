@@ -1,169 +1,170 @@
 # Model Tuning Guide
 
-Practical tuning playbook for this repository's current training system.
+Phase 2 quick playbook for this repo.
 
-## 1. Objective
+## Goal
 
-For each architecture (SimpleCNN, ResNet18, DenseNet121, EfficientNet-B0, MobileNetV2, ShuffleNetV2, SqueezeNet):
+For each model, find a stable training configuration that improves validation AUPRC without early divergence.
 
-1. Tune on validation metrics only.
-2. Select the best checkpoint using validation AUPRC (with loss sanity gate).
-3. Evaluate test set once per locked configuration.
-4. Compare models under a shared, reproducible protocol.
+Rules:
 
-## 2. What Must Stay Constant for Fairness
+1. Use validation metrics for all tuning decisions.
+2. Touch test set once after config is locked.
+3. Change one axis at a time (except coupled pairs noted below).
 
-Keep the following fixed across all models:
+## Sweep Order (Use This Exact Order)
 
-- Patient-level train/val/test split.
-- Image preprocessing/transforms policy.
-- Metric definitions.
-- Training budget policy (same number of tuning runs per model).
-- Selection logic (best validation AUPRC with the same early-stopping rule).
+1. LR pair: `backbone_lr` + `head_lr`.
+2. `freeze_backbone_epochs`.
+3. `WEIGHT_DECAY`.
+4. Scheduler horizon/warmup (`SCHEDULER_WARMUP_EPOCHS`, `SCHEDULER_WARMUP_START_FACTOR`, `SCHEDULER_COSINE_T_MAX`).
 
-Only model family and model-specific optimization settings should change.
+Coupled pairs:
 
-## 3. Current Training Behavior in This Repo
+1. `backbone_lr` and `head_lr`.
+2. `freeze_backbone_epochs` and `head_lr`.
+3. `weight_decay` and `label_smoothing`.
+4. `scheduler_warmup_epochs` and `scheduler_warmup_start_factor`.
 
-### Optimizer and parameter groups
+## Knob Reference
 
-- Optimizer: Adam.
-- For pretrained backbones, training uses two parameter groups when available:
-  - Backbone LR (lower).
-  - Head LR (higher).
-- Early epochs may freeze the backbone (`freeze_backbone_epochs`) and train the head only.
+**`backbone_lr` / `head_lr`** — LR for the pretrained feature extractor and the new classifier respectively. Most sensitive lever. Keep ratio around 5x–12x (`head_lr / backbone_lr`). Increase if underfitting, decrease if overfitting.
 
-### Scheduler (active default)
+**`freeze_backbone_epochs`** — How many epochs to train the head only before unfreezing the backbone. Use 1–2 when the backbone starts overfitting immediately. Use 0 for lightweight models or when you want the backbone to adapt quickly. Move this together with `head_lr` (higher freeze needs lower head LR once unfrozen).
 
-- Scheduler type: `warmup_cosine`.
-- Phase 1: Linear warmup from `SCHEDULER_WARMUP_START_FACTOR * base_lr` to base LR.
-- Phase 2: Cosine annealing down to `SCHEDULER_MIN_LR`.
+**`weight_decay`** — L2 regularization on non-norm, non-bias parameters. Baseline is `5e-5`. Raise to `1e-4`–`2e-4` if the model overfits after LR/freeze adjustments. Lower to `2e-5`–`3e-5` if the model underfits or AUPRC ceiling is stuck. Never adjust this before trying LR and freeze first.
 
-Notes:
+**`label_smoothing`** — Softens one-hot targets during cross-entropy loss. Baseline is `0.03`. Increase to `0.05`–`0.1` if the model is overconfident (high precision, poor recall, large train/val gap). Decrease to `0` or `0.01` if training signal seems too weak. Move in the same direction as `weight_decay` — both reduce effective signal.
 
-- LR can rise in the first 1-2 epochs by design (warmup).
-- Scheduler stepping starts after frozen-only epochs so LR decay aligns with fine-tuning.
+**`scheduler_warmup_epochs`** — How many epochs LR linearly ramps up before cosine decay starts. Baseline is 1. Increase to 2 if val metrics are noisy early (warmup smooths the gradient landscape). Set to 0 only for very short training runs.
 
-### Early stopping and best model criteria
+**`scheduler_warmup_start_factor`** — What fraction of base LR is used at the first warmup step. Baseline is `0.4` (starts at 40% of base LR). Lower to `0.2`–`0.25` for noisy early training. Raise toward `0.6` if the model is slow to start improving.
 
-- Early stopping patience: `PATIENCE`.
-- Best checkpoint requires:
-  - Improved validation AUPRC, and
-  - Validation loss no worse than best loss + 0.01.
+**`scheduler_cosine_t_max`** — Length of the cosine decay cycle in epochs. Defaults to the full training horizon minus warmup. Lower (e.g. 60–70% of epochs) if the model learns fast and you want the LR to decay earlier. Raise or leave default if the model needs a longer fine-tuning tail. Move with total epochs if you change `NUM_EPOCHS`.
 
-This protects against selecting high-AUPRC but clearly unstable loss spikes.
+## Common Patterns -> What To Change
 
-## 4. High-Impact Tuning Knobs (Priority Order)
+### Pattern 1: Early overfitting
 
-Tune in this order for best payoff:
+Signals:
 
-1. LR scale (backbone/head or single LR).
-2. Warmup shape (`SCHEDULER_WARMUP_EPOCHS`, `SCHEDULER_WARMUP_START_FACTOR`).
-3. Freeze duration (`freeze_backbone_epochs` for pretrained models).
-4. Early-stopping patience (`PATIENCE`).
-5. Batch size (`BATCH_SIZE`) if hardware allows.
+1. Best epoch <= 5.
+2. Train loss keeps dropping while val loss rises.
+3. Val AUPRC plateaus early.
 
-## 5. Recommended Starting Ranges
+Adjustments (in order):
 
-Use these as practical search ranges.
+1. Reduce LR pair by ~30%.
+2. Increase `freeze_backbone_epochs` by +1 (max 3).
+3. If still overfitting: raise `weight_decay` one step (e.g. `5e-5` -> `1e-4`).
+4. If still overfitting: raise `label_smoothing` slightly (e.g. `0.03` -> `0.05`).
 
-### SimpleCNN (from scratch)
+### Pattern 2: Slow/flat learning (underfitting)
 
-- `lr`: 2e-4 to 8e-4.
-- Warmup epochs: 1 to 2.
-- Warmup start factor: 0.3 to 0.7.
+Signals:
 
-### Pretrained models (layer-wise)
+1. Train and val both improve weakly.
+2. Best epoch is very late with low peak AUPRC.
 
-- `head_lr`: 2e-4 to 8e-4.
-- `backbone_lr`: 1e-5 to 8e-5.
-- Ratio target: `head_lr` about 5x to 15x `backbone_lr`.
-- `freeze_backbone_epochs`: 0 to 1 (usually avoid long freezes).
+Adjustments (in order):
 
-### Global controls
+1. Increase LR pair by ~25%.
+2. Reduce freeze by -1 (min 0).
+3. Lower `weight_decay` one step (e.g. `5e-5` -> `2e-5`).
+4. Extend `scheduler_cosine_t_max` or total epochs.
 
-- `PATIENCE`: 6 to 10.
-- `NUM_EPOCHS`: long enough for one warmup+decay cycle (for example 20-40).
+### Pattern 3: Noisy validation curve
 
-## 6. Practical Tuning Loop (Per Model)
+Signals:
 
-1. Smoke test (1 epoch, patience 1).
-2. Baseline run (current default config).
-3. Coarse LR sweep (3-4 runs).
-4. Warmup/freeze refinement (2-3 runs around best LR setting).
-5. Lock config and run final training.
-6. Evaluate test once, then persist metrics/history.
+1. Large epoch-to-epoch swings in val precision/recall.
+2. AUPRC bounces without trend.
 
-## 7. Diagnosis Guide
+Adjustments (in order):
 
-### Pattern A: LR drops/decays too late and overfitting already started
+1. Keep LR, increase `scheduler_warmup_epochs` from 1 to 2.
+2. Lower `scheduler_warmup_start_factor` (e.g. `0.4` -> `0.25`).
+3. Optionally lower head LR one step.
 
-Actions:
+### Pattern 4: Good AUPRC, poor recall at fixed threshold
 
-1. Shorten warmup (`SCHEDULER_WARMUP_EPOCHS`: 2 -> 1).
-2. Start closer to base LR (`SCHEDULER_WARMUP_START_FACTOR`: 0.2 -> 0.5).
-3. Reduce/disable initial backbone freeze (`freeze_backbone_epochs`: 1 -> 0).
+Signals:
 
-### Pattern B: Validation is noisy and unstable early
+1. Ranking is good but thresholded recall is not.
 
-Actions:
+Adjustments:
 
-1. Keep warmup at 2 epochs.
-2. Lower start factor (0.2 to 0.3).
-3. Slightly lower head LR.
+1. Do not retrain first.
+2. Handle this in Phase 3 threshold tuning after model config is locked.
 
-### Pattern C: Underfitting (train and val both low)
+## Example Sweeps
 
-Actions:
+Use geometric steps (about 20-40%).
 
-1. Increase LR modestly.
-2. Increase epochs.
-3. Reduce regularization/augmentation intensity.
+### Example A: VGG11 (early overfit case)
 
-### Pattern D: Good AUPRC but poor recall
+Baseline anchor: `head_lr=2e-4`, `backbone_lr=3e-5`, `freeze=1`.
 
-Actions:
+Run plan:
 
-1. Calibrate decision threshold on validation set.
-2. Track thresholded metrics separately from ranking metrics (AUPRC).
+1. LR down: `head_lr=1.4e-4`, `backbone_lr=2e-5`, `freeze=1`.
+2. If still early-overfit: keep LR, set `freeze=2`.
+3. If still early-overfit: set `weight_decay=1e-4`.
+4. If still early-overfit: raise `label_smoothing` to `0.05`.
+5. If val curve is noisy in early epochs: raise `scheduler_warmup_epochs` to 2, lower `scheduler_warmup_start_factor` to `0.25`.
+6. Lock best val-AUPRC run, retrain once, then test once.
 
-## 8. Suggested Run Budget
+### Example B: ShuffleNetV2 (stable but below target)
 
-Balanced budget per model:
+Baseline anchor: `head_lr=2e-4`, `backbone_lr=5e-5`, `freeze=1`.
 
-1. Smoke test: 1 run.
-2. Baseline: 1 run.
-3. Coarse search: 3 runs.
-4. Fine search: 2 runs.
-5. Final locked run: 1 run.
+Run plan:
 
-Total: 8 runs/model.
+1. Mild LR up: `head_lr=2.6e-4`, `backbone_lr=6.5e-5`, `freeze=1`.
+2. If noisier but not better: revert LR, set `freeze=0`.
+3. If still below target: keep best of above and set `weight_decay=3e-5`.
+4. If AUPRC peaks early and then stalls: extend `scheduler_cosine_t_max` (e.g. to 25–28) to give LR a longer decay tail.
+5. If val metrics are noisy after LR bump: raise `scheduler_warmup_epochs` to 2 to soften the opening epochs.
+6. Lock best val-AUPRC run, retrain once, then test once.
 
-## 9. Logging Template (Use Every Run)
+## Family Starting Bands
 
-- Model name.
-- Run ID/date.
-- `NUM_EPOCHS`, `PATIENCE`, `BATCH_SIZE`.
-- LR settings (`lr` or `backbone_lr/head_lr`).
-- Freeze epochs.
-- Warmup settings.
-- Best validation AUPRC/F1/Recall.
-- Best epoch.
-- Test metrics (final locked run only).
-- Notes on what changed and why.
+Heavy (DenseNet121, EfficientNet-B0, GoogLeNet):
 
-## 10. Notebook Workflow Tips for This Repo
+1. `head_lr`: 1e-4 to 3e-4
+2. `backbone_lr`: 2e-5 to 5e-5
+3. `freeze_backbone_epochs`: 1 to 2
 
-- Use `run_smoke_test(...)` before long runs.
-- For clean comparisons after scheduler/strategy changes, start fresh with `resume_from_checkpoint=False`.
-- Rebuild plots from `outputs/experiment_outputs/experiment_outputs.json` after each locked run.
+Midweight (ResNet18, VGG11):
 
-## 11. Final Comparison Checklist
+1. `head_lr`: 1.4e-4 to 4e-4
+2. `backbone_lr`: 2e-5 to 7e-5
+3. `freeze_backbone_epochs`: 0 to 2
 
-- Same data split and preprocessing across models.
-- Same metric definitions.
-- Same run-budget policy.
-- Validation-only tuning decisions.
-- Test set touched once per locked config.
+Lightweight (MobileNetV2, ShuffleNetV2, SqueezeNet):
 
-If all are true, the benchmark comparison is methodologically strong.
+1. `head_lr`: 2e-4 to 5e-4
+2. `backbone_lr`: 3e-5 to 8e-5
+3. `freeze_backbone_epochs`: 0 to 1
+
+Rule of thumb: keep `head_lr` around 5x-12x `backbone_lr`.
+
+## Minimal Run Budget Per Model
+
+1. Baseline reference: 1 run.
+2. LR sweep: 2-3 runs.
+3. Freeze/regularization refinement: 1-2 runs.
+4. Locked retrain: 1 run.
+
+Total: 5-7 runs per model.
+
+## Lock Criteria (Stop Tuning)
+
+Stop when all are true:
+
+1. Best epoch is not in the first few epochs.
+2. No early train/val divergence.
+3. Validation AUPRC is at or near local maximum across your sweep.
+4. A second run of that config is directionally consistent.
+
+Then move to Phase 3 threshold tuning.

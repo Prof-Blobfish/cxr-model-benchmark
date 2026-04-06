@@ -112,9 +112,18 @@ def create_datasets(train_df, val_df, test_df, train_transforms, eval_transforms
     # Create dataset instances for each split, applying the appropriate transformations
 
 def create_dataloaders(train_ds, val_ds, test_ds):
-    train_loader = DataLoader(train_ds, batch_size = config.BATCH_SIZE, shuffle = True, num_workers = config.NUM_WORKERS)
-    val_loader = DataLoader(val_ds, batch_size = config.BATCH_SIZE, shuffle = False, num_workers = config.NUM_WORKERS)
-    test_loader = DataLoader(test_ds, batch_size = config.BATCH_SIZE, shuffle = False, num_workers = config.NUM_WORKERS)
+    loader_kwargs = {
+        "batch_size": config.BATCH_SIZE,
+        "num_workers": config.NUM_WORKERS,
+        "pin_memory": config.PIN_MEMORY,
+    }
+    if config.NUM_WORKERS > 0:
+        loader_kwargs["persistent_workers"] = config.PERSISTENT_WORKERS
+        loader_kwargs["prefetch_factor"] = config.PREFETCH_FACTOR
+
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
+    test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
     
     return train_loader, val_loader, test_loader
     # Create dataloaders for each split, with shuffling for training and no shuffling for validation and test sets

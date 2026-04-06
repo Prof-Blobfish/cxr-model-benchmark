@@ -116,7 +116,7 @@ import matplotlib.pyplot as plt
 def plot_training_history_compact(history, model_name="Model"):
     epochs = range(1, len(history["train_loss"]) + 1)
 
-    fig, axes = plt.subplots(1, 3, figsize=(20, 5))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
     # Graph 1: Train/Val loss + accuracy (shared x, dual y-axis)
     ax1 = axes[0]

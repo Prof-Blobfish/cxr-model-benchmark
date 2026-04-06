@@ -1,8 +1,9 @@
 import gc
 import torch
+from torch.utils.data import DataLoader, Subset
 from sklearn.metrics import average_precision_score
 
-from train_eval import evaluate, setup_training, train_model
+from train_eval import evaluate, setup_training, train_model, print_run_configuration
 from utils import (
     get_model_path,
     get_training_checkpoint_path,
@@ -12,6 +13,26 @@ from utils import (
 )
 from experiement_types import Metrics, History, ModelOutput
 import config
+
+
+def _make_smoke_loader(loader, smoke_batches: int) -> DataLoader:
+    """Build a tiny loader capped to a small number of batches for fast smoke checks."""
+    if smoke_batches < 1:
+        raise ValueError("smoke_batches must be >= 1")
+
+    batch_size = loader.batch_size if loader.batch_size is not None else 1
+    max_items = min(len(loader.dataset), batch_size * smoke_batches)
+    subset = Subset(loader.dataset, list(range(max_items)))
+
+    return DataLoader(
+        subset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=getattr(loader, "pin_memory", False),
+        collate_fn=loader.collate_fn,
+        drop_last=False,
+    )
 
 def run_training_pipeline(
     model_name,
@@ -33,6 +54,12 @@ def run_training_pipeline(
 
     if resume_from_checkpoint is None:
         resume_from_checkpoint = config.AUTO_RESUME_TRAINING
+
+    print_run_configuration(
+        model_name=model_name,
+        training_control=training_control,
+        resume_from_checkpoint=resume_from_checkpoint,
+    )
     
     save_name = f"best_{model_name.lower().replace('-', '_')}"
     checkpoint_path = get_training_checkpoint_path(save_name)
@@ -49,6 +76,7 @@ def run_training_pipeline(
         save_name=save_name,
         checkpoint_path=checkpoint_path,
         resume_from_checkpoint=resume_from_checkpoint,
+        patience=int(training_control.get("patience", config.PATIENCE)),
         live_plot=live_plot,
         live_plot_model_name=model_name,
     )
@@ -61,6 +89,7 @@ def run_training_pipeline(
         loader=test_loader,
         criterion=criterion,
         device=device,
+        split_name="Test",
     )
     test_auprc = average_precision_score(test_labels, test_probs)
 
@@ -104,6 +133,7 @@ def run_smoke_test(
     device,
     smoke_epochs=1,
     smoke_patience=1,
+    smoke_batches=1,
     live_plot=False,
     persist_outputs=False,
     persist_model_name=None,
@@ -114,24 +144,31 @@ def run_smoke_test(
         raise ValueError("smoke_epochs must be >= 1")
     if smoke_patience < 1:
         raise ValueError("smoke_patience must be >= 1")
+    if smoke_batches < 1:
+        raise ValueError("smoke_batches must be >= 1")
 
     original_epochs = config.NUM_EPOCHS
     original_patience = config.PATIENCE
 
     print(
         f"\n=== Smoke test: {model_name} "
-        f"(epochs={smoke_epochs}, patience={smoke_patience}) ==="
+        f"(epochs={smoke_epochs}, patience={smoke_patience}, batches={smoke_batches}) ==="
     )
 
     try:
         config.NUM_EPOCHS = smoke_epochs
         config.PATIENCE = smoke_patience
+
+        smoke_train_loader = _make_smoke_loader(train_loader, smoke_batches)
+        smoke_val_loader = _make_smoke_loader(val_loader, smoke_batches)
+        smoke_test_loader = _make_smoke_loader(test_loader, smoke_batches)
+
         metrics, history = run_training_pipeline(
             model_name=model_name,
             model_builder=model_builder,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            test_loader=test_loader,
+            train_loader=smoke_train_loader,
+            val_loader=smoke_val_loader,
+            test_loader=smoke_test_loader,
             device=device,
             live_plot=live_plot,
             resume_from_checkpoint=False,
