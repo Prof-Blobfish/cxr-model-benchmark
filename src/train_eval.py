@@ -11,7 +11,6 @@ from pathlib import Path
 from utils import get_model_path
 import config
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, average_precision_score
-import time
 
 
 def _is_cuda_device(device) -> bool:
@@ -19,44 +18,6 @@ def _is_cuda_device(device) -> bool:
         return torch.device(device).type == "cuda"
     except (TypeError, ValueError):
         return False
-
-
-def _get_cuda_max_memory() -> int:
-    """Get total CUDA device memory in bytes."""
-    try:
-        props = torch.cuda.get_device_properties(0)
-        return props.total_memory
-    except Exception:
-        return 24 * (1024 ** 3)  # Default fallback for 24GB GPU
-
-
-def _format_vram_gb(num_bytes: int, total_bytes: int = None) -> str:
-    """Format VRAM in GB with optional percentage."""
-    gb = num_bytes / (1024 ** 3)
-    if total_bytes is None:
-        return f"{gb:.2f}G"
-    pct = (num_bytes / total_bytes * 100) if total_bytes > 0 else 0
-    return f"{gb:.2f}G({pct:.1f}%)"
-
-
-def _get_vram_stats_str(device) -> str:
-    if not _is_cuda_device(device):
-        return "CPU"
-
-    total_mem = _get_cuda_max_memory()
-    allocated = torch.cuda.memory_allocated(device)
-    reserved = torch.cuda.memory_reserved(device)
-    peak = torch.cuda.max_memory_allocated(device)
-    return f"VRAM a/r/p: {_format_vram_gb(allocated, total_mem)}/{_format_vram_gb(reserved, total_mem)}/{_format_vram_gb(peak, total_mem)}"
-
-
-def _get_vram_peak_percent(device) -> float:
-    """Return peak memory usage as percentage of total CUDA memory."""
-    if not _is_cuda_device(device):
-        return 0.0
-    total_mem = _get_cuda_max_memory()
-    peak = torch.cuda.max_memory_allocated(device)
-    return (peak / total_mem * 100) if total_mem > 0 else 0.0
 
 
 def _resolve_amp_dtype() -> torch.dtype:
@@ -77,8 +38,26 @@ def _move_images_to_device(images, device, transfer_non_blocking: bool, use_chan
         )
     return images.to(device, non_blocking=transfer_non_blocking)
 
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma: float = 2.0, weight: Optional[torch.Tensor] = None):
+        super().__init__()
+        self.gamma = float(gamma)
+        self.weight = weight
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = nn.functional.cross_entropy(
+            inputs,
+            targets,
+            weight=self.weight,
+            reduction="none",
+        )
+        pt = torch.exp(-ce_loss)
+        focal_factor = (1.0 - pt).pow(self.gamma)
+        return (focal_factor * ce_loss).mean()
+
 def _resolve_training_strategy(model_name: Optional[str]) -> Dict[str, Any]:
-    strategy = {
+    defaults = {
         "lr": config.LEARNING_RATE,
         "backbone_lr": None,
         "head_lr": None,
@@ -87,16 +66,102 @@ def _resolve_training_strategy(model_name: Optional[str]) -> Dict[str, Any]:
         "channels_last": None,  # None = follow global CHANNELS_LAST_ENABLED; True/False = override
         "weight_decay": None,
         "label_smoothing": None,
+        "loss_type": None,
+        "loss_class_weights": None,
+        "focal_gamma": None,
         "scheduler_min_lr": None,
         "scheduler_start_epoch": None,
         "scheduler_steps_per_epoch": None,
         "scheduler_warmup_epochs": None,
         "scheduler_warmup_start_factor": None,
         "scheduler_cosine_t_max": None,
+        "scheduler_restart_on_unfreeze": None,
+        "restart_warmup_epochs": None,
+        "restart_warmup_start_factor": None,
     }
-    if model_name:
-        strategy.update(config.MODEL_TRAINING_CONFIGS.get(model_name, {}))
-    return strategy
+    return config.resolve_model_strategy(defaults, model_name=model_name)
+
+
+def _resolve_training_runtime(model_name: Optional[str]) -> Dict[str, Any]:
+    """Resolve normalized training/runtime settings once for a model."""
+    strategy = _resolve_training_strategy(model_name)
+
+    patience_cfg = strategy.get("patience")
+    effective_patience = int(
+        patience_cfg
+        if patience_cfg is not None
+        else getattr(config, "PATIENCE", 1)
+    )
+
+    label_smoothing_cfg = strategy.get("label_smoothing")
+    label_smoothing = float(
+        label_smoothing_cfg
+        if label_smoothing_cfg is not None
+        else getattr(config, "LABEL_SMOOTHING", 0.0)
+    )
+
+    weight_decay_cfg = strategy.get("weight_decay")
+    weight_decay = float(
+        weight_decay_cfg
+        if weight_decay_cfg is not None
+        else getattr(config, "WEIGHT_DECAY", 0.0)
+    )
+
+    loss_type = str(
+        strategy.get("loss_type")
+        or getattr(config, "LOSS_TYPE", "cross_entropy")
+    ).lower()
+
+    loss_class_weights = strategy.get("loss_class_weights")
+    if loss_class_weights is None:
+        loss_class_weights = getattr(config, "LOSS_CLASS_WEIGHTS", None)
+
+    focal_gamma_cfg = strategy.get("focal_gamma")
+    focal_gamma = float(
+        focal_gamma_cfg
+        if focal_gamma_cfg is not None
+        else getattr(config, "FOCAL_GAMMA", 2.0)
+    )
+
+    scheduler_min_lr_cfg = strategy.get("scheduler_min_lr")
+    scheduler_min_lr = float(
+        scheduler_min_lr_cfg
+        if scheduler_min_lr_cfg is not None
+        else getattr(config, "SCHEDULER_MIN_LR", 0.0)
+    )
+
+    scheduler_start_epoch_cfg = strategy.get("scheduler_start_epoch")
+    scheduler_start_epoch = max(
+        1,
+        int(
+            scheduler_start_epoch_cfg
+            if scheduler_start_epoch_cfg is not None
+            else getattr(config, "SCHEDULER_START_EPOCH", 1)
+        ),
+    )
+
+    scheduler_steps_cfg = strategy.get("scheduler_steps_per_epoch")
+    scheduler_steps_per_epoch = max(
+        1,
+        int(
+            scheduler_steps_cfg
+            if scheduler_steps_cfg is not None
+            else getattr(config, "SCHEDULER_STEPS_PER_EPOCH", 1)
+        ),
+    )
+
+    return {
+        "strategy": strategy,
+        "patience": max(1, effective_patience),
+        "label_smoothing": label_smoothing,
+        "weight_decay": weight_decay,
+        "loss_type": loss_type,
+        "loss_class_weights": loss_class_weights,
+        "focal_gamma": focal_gamma,
+        "scheduler_min_lr": scheduler_min_lr,
+        "scheduler_start_epoch": scheduler_start_epoch,
+        "scheduler_steps_per_epoch": scheduler_steps_per_epoch,
+    }
 
 def _get_classifier_module(model: nn.Module) -> Optional[nn.Module]:
     if hasattr(model, "model"):
@@ -136,6 +201,80 @@ def _split_model_parameters(model: nn.Module) -> Optional[Tuple[List[nn.Paramete
 def _set_params_trainable(params: List[nn.Parameter], trainable: bool) -> None:
     for param in params:
         param.requires_grad = trainable
+
+
+def _build_epoch_snapshot_lines(
+    epoch: int,
+    total_epochs: int,
+    history: Dict[str, Any],
+    is_best: bool,
+    patience_counter: int,
+    patience: int,
+) -> List[str]:
+    """Build a clean per-epoch snapshot with relevant metrics and deltas from previous epoch."""
+    # Current epoch metrics
+    train_loss = history["train_loss"][-1]
+    train_acc = history["train_acc"][-1]
+    val_loss = history["val_loss"][-1]
+    val_acc = history["val_acc"][-1]
+    val_auprc = history["val_auprc"][-1]
+    val_f1 = history["val_f1"][-1]
+    val_recall = history["val_recall"][-1]
+
+    # Previous epoch metrics (if available)
+    has_prev = len(history["train_loss"]) > 1
+    prev_train_loss = history["train_loss"][-2] if has_prev else None
+    prev_val_loss = history["val_loss"][-2] if has_prev else None
+    prev_val_auprc = history["val_auprc"][-2] if has_prev else None
+    prev_val_f1 = history["val_f1"][-2] if has_prev else None
+
+    # Compute deltas
+    delta_train_loss = train_loss - prev_train_loss if has_prev else None
+    delta_val_loss = val_loss - prev_val_loss if has_prev else None
+    delta_val_auprc = val_auprc - prev_val_auprc if has_prev else None
+    delta_val_f1 = val_f1 - prev_val_f1 if has_prev else None
+
+    lines = [
+        f"Epoch {epoch + 1}/{total_epochs}",
+        f"  Train Loss: {train_loss:.4f}" + (f" (Δ {delta_train_loss:+.4f})" if has_prev else ""),
+        f"  Train Acc:  {train_acc:.4f}",
+        f"  Val Loss:   {val_loss:.4f}" + (f" (Δ {delta_val_loss:+.4f})" if has_prev else ""),
+        f"  Val Acc:    {val_acc:.4f}",
+        f"  Val AUPRC:  {val_auprc:.4f}" + (f" (Δ {delta_val_auprc:+.4f})" if has_prev else ""),
+        f"  Val Recall: {val_recall:.4f} | Val F1: {val_f1:.4f}" + (f" (Δ {delta_val_f1:+.4f})" if has_prev else ""),
+    ]
+
+    if is_best:
+        lines.append("  → Best epoch so far (saved model)")
+    else:
+        lines.append(f"  → No improvement. Patience: {patience_counter}/{patience}")
+
+    return lines
+
+
+def _print_epoch_snapshot(epoch: int, total_epochs: int, history: Dict[str, Any], is_best: bool, patience_counter: int, patience: int) -> str:
+    """Print per-epoch snapshot and return the rendered text block."""
+    lines = _build_epoch_snapshot_lines(epoch, total_epochs, history, is_best, patience_counter, patience)
+    snapshot_text = "\n".join(lines)
+    print(f"\n{snapshot_text}", flush=True)
+    return snapshot_text
+
+
+def _append_epoch_log(log_path: Optional[str], text_block: str, prefix: Optional[str] = None) -> None:
+    """Append an epoch text block to an external log file and flush immediately."""
+    if not log_path:
+        return
+
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = text_block
+    if prefix:
+        payload = f"[{prefix}]\n{payload}"
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(payload + "\n\n")
+        handle.flush()
 
 
 def _split_decay_params(
@@ -209,6 +348,7 @@ def _format_optimizer_status(optimizer: optim.Optimizer) -> str:
 
 def _build_history_template() -> Dict[str, Any]:
     return {
+        "model_name": None,
         "train_loss": [],
         "train_acc": [],
         "val_loss": [],
@@ -221,7 +361,6 @@ def _build_history_template() -> Dict[str, Any]:
         "lr_backbone": [],
         "lr_head": [],
         "backbone_frozen": [],
-        "vram_peak_pct": [],
         "best_epoch": None,
     }
 
@@ -370,26 +509,8 @@ def _resolve_scheduler_settings(strategy: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_resolved_run_config(model_name: Optional[str], training_control: Dict[str, Any]) -> Dict[str, Any]:
-    strategy = _resolve_training_strategy(model_name)
-
-    patience_cfg = strategy.get("patience")
-    effective_patience = int(
-        patience_cfg
-        if patience_cfg is not None
-        else getattr(config, "PATIENCE", 1)
-    )
-
-    label_smoothing = strategy.get("label_smoothing")
-    if label_smoothing is None:
-        label_smoothing = float(getattr(config, "LABEL_SMOOTHING", 0.0))
-    else:
-        label_smoothing = float(label_smoothing)
-
-    weight_decay = strategy.get("weight_decay")
-    if weight_decay is None:
-        weight_decay = float(getattr(config, "WEIGHT_DECAY", 0.0))
-    else:
-        weight_decay = float(weight_decay)
+    runtime = _resolve_training_runtime(model_name)
+    strategy = runtime["strategy"]
 
     channels_last_override = training_control.get("channels_last_override")
     if channels_last_override is None:
@@ -403,7 +524,7 @@ def get_resolved_run_config(model_name: Optional[str], training_control: Dict[st
     return {
         "model_name": model_name,
         "num_epochs": int(getattr(config, "NUM_EPOCHS", 1)),
-        "patience": max(1, effective_patience),
+        "patience": runtime["patience"],
         "batch_size": int(getattr(config, "BATCH_SIZE", 1)),
         "image_size": int(getattr(config, "IMAGE_SIZE", 1)),
         "seed": int(getattr(config, "RANDOM_SEED", 0)),
@@ -416,13 +537,16 @@ def get_resolved_run_config(model_name: Optional[str], training_control: Dict[st
         "uses_param_groups": uses_param_groups,
         "freeze_backbone_enabled": bool(getattr(config, "FREEZE_BACKBONE_ENABLED", False)),
         "freeze_backbone_epochs": freeze_backbone_epochs,
-        "label_smoothing": label_smoothing,
-        "weight_decay": weight_decay,
+        "label_smoothing": runtime["label_smoothing"],
+        "weight_decay": runtime["weight_decay"],
+        "loss_type": runtime["loss_type"],
+        "loss_class_weights": runtime["loss_class_weights"],
+        "focal_gamma": runtime["focal_gamma"],
         "learning_rate": float(strategy.get("lr", getattr(config, "LEARNING_RATE", 1e-4))),
         "backbone_lr": strategy.get("backbone_lr"),
         "head_lr": strategy.get("head_lr"),
         "scheduler": _resolve_scheduler_settings(strategy),
-        "model_overrides": config.MODEL_TRAINING_CONFIGS.get(model_name, {}) if model_name else {},
+        "model_overrides": strategy if model_name else {},  # Returns effective config (baseline + tuning merged)
     }
 
 
@@ -457,7 +581,10 @@ def print_run_configuration(model_name: Optional[str], training_control: Dict[st
         f"backbone_lr={resolved['backbone_lr']}, "
         f"head_lr={resolved['head_lr']}, "
         f"weight_decay={resolved['weight_decay']:.6g}, "
-        f"label_smoothing={resolved['label_smoothing']:.6g}"
+        f"label_smoothing={resolved['label_smoothing']:.6g}, "
+        f"loss_type={resolved['loss_type']}, "
+        f"loss_class_weights={resolved['loss_class_weights']}, "
+        f"focal_gamma={resolved['focal_gamma']:.6g}"
     )
 
     scheduler = resolved["scheduler"]
@@ -495,57 +622,44 @@ def print_run_configuration(model_name: Optional[str], training_control: Dict[st
     print(f"Model Overrides: {resolved['model_overrides']}")
 
 def setup_training(model, model_name=None, lr=config.LEARNING_RATE):
-    strategy = _resolve_training_strategy(model_name)
+    runtime = _resolve_training_runtime(model_name)
+    strategy = runtime["strategy"]
 
-    patience_cfg = strategy.get("patience")
-    effective_patience = int(
-        patience_cfg
-        if patience_cfg is not None
-        else getattr(config, "PATIENCE", 1)
-    )
-    label_smoothing = strategy.get("label_smoothing")
-    if label_smoothing is None:
-        label_smoothing = float(getattr(config, "LABEL_SMOOTHING", 0.0))
+    class_weight_tensor = None
+    if runtime["loss_class_weights"] is not None:
+        class_weight_tensor = torch.tensor(
+            runtime["loss_class_weights"],
+            dtype=torch.float32,
+            device=next(model.parameters()).device,
+        )
+
+    if runtime["loss_type"] == "cross_entropy":
+        criterion = nn.CrossEntropyLoss(
+            weight=class_weight_tensor,
+            label_smoothing=runtime["label_smoothing"],
+        )
+    elif runtime["loss_type"] == "focal":
+        criterion = FocalLoss(
+            gamma=runtime["focal_gamma"],
+            weight=class_weight_tensor,
+        )
     else:
-        label_smoothing = float(label_smoothing)
-    criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
-
-    weight_decay = strategy.get("weight_decay")
-    if weight_decay is None:
-        weight_decay = float(getattr(config, "WEIGHT_DECAY", 0.0))
-    else:
-        weight_decay = float(weight_decay)
-
-    scheduler_min_lr_cfg = strategy.get("scheduler_min_lr")
-    scheduler_min_lr = float(
-        scheduler_min_lr_cfg
-        if scheduler_min_lr_cfg is not None
-        else getattr(config, "SCHEDULER_MIN_LR", 0.0)
-    )
-    scheduler_start_epoch_cfg = strategy.get("scheduler_start_epoch")
-    scheduler_start_epoch = int(
-        scheduler_start_epoch_cfg
-        if scheduler_start_epoch_cfg is not None
-        else getattr(config, "SCHEDULER_START_EPOCH", 1)
-    )
-    scheduler_steps_per_epoch_cfg = strategy.get("scheduler_steps_per_epoch")
-    scheduler_steps_per_epoch = int(
-        scheduler_steps_per_epoch_cfg
-        if scheduler_steps_per_epoch_cfg is not None
-        else getattr(config, "SCHEDULER_STEPS_PER_EPOCH", 1)
-    )
+        raise ValueError(f"Unsupported loss type: {runtime['loss_type']}")
 
     training_control: Dict[str, Any] = {
         "uses_param_groups": False,
-        "patience": max(1, effective_patience),
+        "patience": runtime["patience"],
         "freeze_backbone_epochs": 0,
         "backbone_params": [],
         "backbone_frozen": False,
         "channels_last_override": strategy.get("channels_last"),  # None|True|False
-        "scheduler_min_lr": scheduler_min_lr,
-        "scheduler_start_epoch": max(1, scheduler_start_epoch),
-        "scheduler_steps_per_epoch": max(1, scheduler_steps_per_epoch),
+        "scheduler_min_lr": runtime["scheduler_min_lr"],
+        "scheduler_start_epoch": runtime["scheduler_start_epoch"],
+        "scheduler_steps_per_epoch": runtime["scheduler_steps_per_epoch"],
         "scheduler_cosine_t_max": None,
+        "scheduler_restart_on_unfreeze": bool(strategy.get("scheduler_restart_on_unfreeze", getattr(config, "SCHEDULER_RESTART_ON_UNFREEZE", False))),
+        "restart_warmup_epochs": int(strategy.get("restart_warmup_epochs", 0)),
+        "restart_warmup_start_factor": float(strategy.get("restart_warmup_start_factor", getattr(config, "SCHEDULER_WARMUP_START_FACTOR", 0.4))),
     }
 
     param_split = _split_model_parameters(model) if config.LAYERWISE_LR_ENABLED else None
@@ -572,7 +686,7 @@ def setup_training(model, model_name=None, lr=config.LEARNING_RATE):
                 {
                     "params": backbone_decay,
                     "lr": strategy["backbone_lr"],
-                    "weight_decay": weight_decay,
+                    "weight_decay": runtime["weight_decay"],
                     "name": "backbone_decay",
                 }
             )
@@ -590,7 +704,7 @@ def setup_training(model, model_name=None, lr=config.LEARNING_RATE):
                 {
                     "params": head_decay,
                     "lr": strategy["head_lr"],
-                    "weight_decay": weight_decay,
+                    "weight_decay": runtime["weight_decay"],
                     "name": "head_decay",
                 }
             )
@@ -623,7 +737,7 @@ def setup_training(model, model_name=None, lr=config.LEARNING_RATE):
                 {
                     "params": decay_params,
                     "lr": effective_lr,
-                    "weight_decay": weight_decay,
+                    "weight_decay": runtime["weight_decay"],
                     "name": "model_decay",
                 }
             )
@@ -649,7 +763,7 @@ def setup_training(model, model_name=None, lr=config.LEARNING_RATE):
                 patience=config.SCHEDULER_PATIENCE,
                 threshold=config.SCHEDULER_THRESHOLD,
                 threshold_mode=config.SCHEDULER_THRESHOLD_MODE,
-                min_lr=scheduler_min_lr,
+                min_lr=runtime["scheduler_min_lr"],
             )
         elif config.SCHEDULER_TYPE == "warmup_cosine":
             total_epochs = max(1, int(config.NUM_EPOCHS))
@@ -690,7 +804,7 @@ def setup_training(model, model_name=None, lr=config.LEARNING_RATE):
                 cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
                     optimizer=optimizer,
                     T_max=cosine_t_max,
-                    eta_min=scheduler_min_lr,
+                    eta_min=runtime["scheduler_min_lr"],
                 )
                 scheduler = optim.lr_scheduler.SequentialLR(
                     optimizer=optimizer,
@@ -701,7 +815,7 @@ def setup_training(model, model_name=None, lr=config.LEARNING_RATE):
                 scheduler = optim.lr_scheduler.CosineAnnealingLR(
                     optimizer=optimizer,
                     T_max=cosine_t_max,
-                    eta_min=scheduler_min_lr,
+                    eta_min=runtime["scheduler_min_lr"],
                 )
         else:
             raise ValueError(f"Unsupported scheduler type: {config.SCHEDULER_TYPE}")
@@ -716,8 +830,6 @@ def train_one_epoch(
     optimizer,
     device,
     epoch=None,
-    start_time=None,
-    total_epochs=None,
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
     grad_scaler: Optional[torch.cuda.amp.GradScaler] = None,
@@ -734,12 +846,6 @@ def train_one_epoch(
         desc=f"Train Epoch {epoch + 1}",
         leave=False
     )
-
-    show_vram = getattr(config, "LIVE_VRAM_METRICS", True) and _is_cuda_device(device)
-    vram_update_interval = max(1, int(getattr(config, "VRAM_METRIC_UPDATE_INTERVAL", 10)))
-    vram_status = "..."
-    if show_vram:
-        torch.cuda.reset_peak_memory_stats(device)
 
     for batch_idx, (images, labels) in enumerate(progress_bar):
         transfer_non_blocking = _is_cuda_device(device)
@@ -773,36 +879,16 @@ def train_one_epoch(
         running_avg_loss = running_loss / len(all_labels)
         running_acc = accuracy_score(all_labels, all_preds)
 
-        # Total ETA calculation
-        total_eta_str = None
-        if start_time is not None and total_epochs is not None and epoch is not None:
-            elapsed_time = time.time() - start_time
-            # Estimate progress as (epoch + batch progress)
-            progress = epoch + (batch_idx + 1) / len(loader)
-            avg_epoch_time = elapsed_time / progress if progress > 0 else 0
-            total_seconds = int(avg_epoch_time * total_epochs)
-            total_eta_str = time.strftime('%H:%M:%S', time.gmtime(total_seconds))
-
-        if show_vram and ((batch_idx + 1) % vram_update_interval == 0 or (batch_idx + 1) == len(loader)):
-            vram_status = _get_vram_stats_str(device)
-
         progress_bar.set_postfix(
             batch_loss=f"{loss.item():.4f}",
             avg_loss=f"{running_avg_loss:.4f}",
             avg_acc=f"{running_acc:.4f}",
-            total_eta=total_eta_str if total_eta_str else '...',
-            vram=vram_status if show_vram else "n/a",
         )
 
     epoch_loss = running_loss / len(loader.dataset)
     epoch_acc = accuracy_score(all_labels, all_preds)
 
-    vram_peak_pct = 0.0
-    if show_vram:
-        vram_peak_pct = _get_vram_peak_percent(device)
-        print(f"  {_get_vram_stats_str(device)}")
-
-    return epoch_loss, epoch_acc, vram_peak_pct
+    return epoch_loss, epoch_acc
 
 def evaluate(
     model,
@@ -868,6 +954,7 @@ def evaluate(
     return epoch_loss, epoch_acc, epoch_precision, epoch_recall, epoch_f1, all_labels, all_preds, all_probs
 
 def train_model(
+    model_name,
     model,
     train_loader,
     val_loader,
@@ -881,7 +968,8 @@ def train_model(
     resume_from_checkpoint: bool = False,
     patience: int = config.PATIENCE,
     live_plot: bool = False,
-    live_plot_model_name: str = "Model",
+    epoch_log_path: Optional[str] = None,
+    epoch_log_prefix: Optional[str] = None,
 ):
     if save_name is None:
         save_name = config.BEST_MODEL_NAME.replace(".pt", "")
@@ -985,9 +1073,9 @@ def train_model(
             f"cosine_t_max={scheduler_cosine_t_max}"
         )
 
+    history["model_name"] = model_name
 
-    start_time = time.time()
-    total_eta_str = None
+
     last_epoch = start_epoch - 1
     training_finished = False
     for epoch in range(start_epoch, config.NUM_EPOCHS):
@@ -1001,12 +1089,43 @@ def train_model(
                 print(f"Epoch {epoch + 1}: backbone frozen, training classifier head only.")
             else:
                 print(f"Epoch {epoch + 1}: backbone unfrozen, fine-tuning all layers.")
+                # Restart scheduler at unfreeze if configured
+                _restart_on_unfreeze = training_control.get("scheduler_restart_on_unfreeze", False)
+                if _restart_on_unfreeze and scheduler is not None and config.SCHEDULER_TYPE == "warmup_cosine":
+                    _restart_warmup_epochs = training_control.get("restart_warmup_epochs", 0)
+                    _restart_cosine_t_max = training_control.get("scheduler_cosine_t_max") or getattr(config, "SCHEDULER_COSINE_T_MAX", 0)
+                    _restart_cosine_t_max = max(1, int(_restart_cosine_t_max)) if _restart_cosine_t_max > 0 else max(1, config.NUM_EPOCHS - epoch)
+                    _restart_min_lr = training_control.get("scheduler_min_lr") or getattr(config, "SCHEDULER_MIN_LR", 0.0)
+                    _restart_warmup_start_factor = float(training_control.get("restart_warmup_start_factor") or getattr(config, "SCHEDULER_WARMUP_START_FACTOR", 0.4))
+                    if _restart_warmup_epochs > 0:
+                        _wup = optim.lr_scheduler.LinearLR(
+                            optimizer=optimizer,
+                            start_factor=_restart_warmup_start_factor,
+                            end_factor=1.0,
+                            total_iters=_restart_warmup_epochs,
+                        )
+                        _cos = optim.lr_scheduler.CosineAnnealingLR(
+                            optimizer=optimizer,
+                            T_max=_restart_cosine_t_max,
+                            eta_min=_restart_min_lr,
+                        )
+                        scheduler = optim.lr_scheduler.SequentialLR(
+                            optimizer=optimizer,
+                            schedulers=[_wup, _cos],
+                            milestones=[_restart_warmup_epochs],
+                        )
+                    else:
+                        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                            optimizer=optimizer,
+                            T_max=_restart_cosine_t_max,
+                            eta_min=_restart_min_lr,
+                        )
+                    scheduler_start_epoch = epoch + 1
+                    print(f"Epoch {epoch + 1}: scheduler restarted (warmup={_restart_warmup_epochs}, cosine_t_max={_restart_cosine_t_max}, start_epoch={scheduler_start_epoch}).")
 
-        train_loss, train_acc, train_vram_pct = train_one_epoch(
+        train_loss, train_acc = train_one_epoch(
             model, train_loader, criterion, optimizer, device,
             epoch=epoch,
-            start_time=start_time,
-            total_epochs=config.NUM_EPOCHS,
             use_amp=use_amp,
             amp_dtype=amp_dtype,
             grad_scaler=grad_scaler,
@@ -1031,7 +1150,6 @@ def train_model(
         history["val_f1"].append(val_f1)
         history["val_auprc"].append(average_precision_score(val_labels, val_probs))
         history["backbone_frozen"].append(training_control.get("backbone_frozen", False))
-        history["vram_peak_pct"].append(train_vram_pct)
 
         val_auprc = history["val_auprc"][-1]
 
@@ -1062,40 +1180,34 @@ def train_model(
         if head_lr is not None:
             history["lr_head"].append(head_lr)
 
-        # ETA calculation
-        elapsed_time = time.time() - start_time
-        avg_epoch_time = elapsed_time / (epoch + 1)
-        remaining_epochs = config.NUM_EPOCHS - (epoch + 1)
-        eta_seconds = int(avg_epoch_time * remaining_epochs)
-        eta_str = time.strftime('%H:%M:%S', time.gmtime(eta_seconds))
-        # Calculate total ETA after first epoch
-        if epoch == 0:
-            total_seconds = int(avg_epoch_time * config.NUM_EPOCHS)
-            total_eta_str = time.strftime('%H:%M:%S', time.gmtime(total_seconds))
+        # Determine if this is best epoch and print snapshot
+        is_best_epoch = (val_auprc > best_auprc) and (val_loss <= best_val_loss + 0.01)
 
-        if (val_auprc > best_auprc) and (val_loss <= best_val_loss + 0.01):
-            print(f"Epoch {epoch + 1}/{config.NUM_EPOCHS} | ETA (Remaining): {eta_str} | Total ETA: {total_eta_str if total_eta_str else '...'}")
-            print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
-            print(f"  Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
-            print(f"  Val Precision: {val_precision:.4f}")
-            print(f"  Val Recall: {val_recall:.4f} | Val F1: {val_f1:.4f}")
-            print(f"  Val AUPRC: {val_auprc:.4f}")
-            print(f"  {_format_lr_status(optimizer)}")
-            print(f"  {_format_optimizer_status(optimizer)}")
-            print("-" * 60)
+        if is_best_epoch:
             best_auprc = val_auprc
             best_val_loss = val_loss
             patience_counter = 0
             history["best_epoch"] = epoch + 1
             torch.save(model.state_dict(), save_path)
-            print(f"Saved best model to {save_path}")
-            print("-" * 60)
         else:
             patience_counter += 1
-            print(f"No improvement. Patience: {patience_counter}/{patience}")
-            print(f"  {_format_lr_status(optimizer)}")
-            print(f"  {_format_optimizer_status(optimizer)}")
-            print("-" * 60)
+
+        if live_plot:
+            # Show live plot in notebook after each epoch, do not save or buffer
+            from utils import plot_training_history_compact
+            plot_training_history_compact(history, model_name)
+
+        # Print per-epoch snapshot; flush ensures prompt rendering over remote sessions.
+        snapshot_text = _print_epoch_snapshot(epoch, config.NUM_EPOCHS, history, is_best_epoch, patience_counter, patience)
+        lr_line = f"  {_format_lr_status(optimizer)}"
+        opt_line = f"  {_format_optimizer_status(optimizer)}"
+        print(lr_line, flush=True)
+        print(opt_line, flush=True)
+        _append_epoch_log(
+            log_path=epoch_log_path,
+            text_block="\n".join([snapshot_text, lr_line, opt_line]),
+            prefix=epoch_log_prefix,
+        )
 
         if checkpoint_path and config.CHECKPOINTING_ENABLED:
             checkpoint_payload = {
@@ -1121,26 +1233,27 @@ def train_model(
             }
             _save_checkpoint_atomic(checkpoint_path, checkpoint_payload)
 
-        if live_plot:
-            # Notebook-only: replace previous epoch plot with the latest one.
-            # Render after best_epoch updates so the marker is not one epoch behind.
-            try:
-                from IPython.display import clear_output
-                from utils import plot_training_history_compact
 
-                clear_output(wait=True)
-                plot_training_history_compact(history, live_plot_model_name)
-            except Exception:
-                # Skip live plotting when running outside notebook or if display backend is unavailable.
-                pass
 
         if patience_counter >= patience:
             print(f"Early stopping at epoch {epoch + 1} (patience {patience} exceeded)")
             training_finished = True
             break
 
-    if not training_finished and last_epoch + 1 >= config.NUM_EPOCHS:
-        training_finished = True
+
+    # Only save the final plot after training is complete
+    if live_plot:
+        from utils import save_training_plot
+        # Pass best epoch and best val AUPRC for filename
+        best_epoch = history.get('best_epoch', 'NA')
+        best_auprc = None
+        if 'val_auprc' in history and best_epoch != 'NA' and best_epoch is not None:
+            try:
+                best_auprc = history['val_auprc'][best_epoch-1]
+            except Exception:
+                best_auprc = None
+        # Save only at the end
+        save_training_plot(history, f"{model_name}_best{best_epoch}_AUPRC{best_auprc:.4f}" if best_auprc is not None else model_name)
 
     if checkpoint_path and config.CHECKPOINTING_ENABLED and last_epoch >= 0:
         final_payload = {

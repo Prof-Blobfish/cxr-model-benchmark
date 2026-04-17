@@ -7,6 +7,18 @@ import numpy as np
 import config
 from pathlib import Path
 
+
+def _resolve_data_strategy(model_name=None):
+    defaults = {
+        "augmentation_enabled": getattr(config, "AUGMENTATION_ENABLED", True),
+        "aug_rotation_degrees": float(getattr(config, "AUG_ROTATION_DEGREES", 5.0)),
+        "aug_affine_translate": float(getattr(config, "AUG_AFFINE_TRANSLATE", 0.0)),
+        "aug_affine_scale_delta": float(getattr(config, "AUG_AFFINE_SCALE_DELTA", 0.0)),
+        "aug_brightness": float(getattr(config, "AUG_BRIGHTNESS", 0.0)),
+        "aug_contrast": float(getattr(config, "AUG_CONTRAST", 0.0)),
+    }
+    return config.resolve_model_strategy(defaults, model_name=model_name)
+
 def load_metadata(csv_path, image_root):
     df = pd.read_csv(csv_path)
     
@@ -76,14 +88,49 @@ class ChestXrayDataset(Dataset):
         return image, label
     # Custom dataset class to load images and labels, applying transformations as needed
 
-def get_transforms():
-    train_transforms = transforms.Compose([
+def get_transforms(model_name=None):
+    strategy = _resolve_data_strategy(model_name)
+
+    train_ops = [
         transforms.Resize((config.IMAGE_SIZE, config.IMAGE_SIZE)),
-        transforms.RandomRotation(5),
+    ]
+
+    if bool(strategy.get("augmentation_enabled", True)):
+        rotation_degrees = max(0.0, float(strategy.get("aug_rotation_degrees", 0.0)))
+        if rotation_degrees > 0.0:
+            train_ops.append(transforms.RandomRotation(rotation_degrees))
+
+        affine_translate = max(0.0, float(strategy.get("aug_affine_translate", 0.0)))
+        affine_scale_delta = max(0.0, float(strategy.get("aug_affine_scale_delta", 0.0)))
+        if affine_translate > 0.0 or affine_scale_delta > 0.0:
+            scale_range = None
+            if affine_scale_delta > 0.0:
+                scale_range = (max(0.1, 1.0 - affine_scale_delta), 1.0 + affine_scale_delta)
+            train_ops.append(
+                transforms.RandomAffine(
+                    degrees=0,
+                    translate=(affine_translate, affine_translate) if affine_translate > 0.0 else None,
+                    scale=scale_range,
+                )
+            )
+
+        aug_brightness = max(0.0, float(strategy.get("aug_brightness", 0.0)))
+        aug_contrast = max(0.0, float(strategy.get("aug_contrast", 0.0)))
+        if aug_brightness > 0.0 or aug_contrast > 0.0:
+            train_ops.append(
+                transforms.ColorJitter(
+                    brightness=aug_brightness,
+                    contrast=aug_contrast,
+                )
+            )
+
+    train_ops.extend([
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5], std=[0.25])
     ])
-    # Augmentation for training set: resize, random rotate, convert to tensore and normalize
+
+    train_transforms = transforms.Compose(train_ops)
+    # Augmentation for training set: resize + optional configurable transforms + normalize.
 
     eval_transforms = transforms.Compose([
         transforms.Resize((config.IMAGE_SIZE, config.IMAGE_SIZE)),
@@ -95,23 +142,16 @@ def get_transforms():
     return train_transforms, eval_transforms
 
 
-def split_dataframe(df):
+def prepare_data(df, model_name=None):
+    train_transforms, eval_transforms = get_transforms(model_name=model_name)
     train_df = df[df["split"] == "train"].copy()
     val_df = df[df["split"] == "val"].copy()
     test_df = df[df["split"] == "test"].copy()
-    
-    return train_df, val_df, test_df
-    # Split the dataframe into training, validation, and test sets based on the "split" column
 
-def create_datasets(train_df, val_df, test_df, train_transforms, eval_transforms):
-    train_ds = ChestXrayDataset(train_df, transform = train_transforms)
-    val_ds = ChestXrayDataset(val_df, transform = eval_transforms)
-    test_ds = ChestXrayDataset(test_df, transform = eval_transforms)
+    train_ds = ChestXrayDataset(train_df, transform=train_transforms)
+    val_ds = ChestXrayDataset(val_df, transform=eval_transforms)
+    test_ds = ChestXrayDataset(test_df, transform=eval_transforms)
 
-    return train_ds, val_ds, test_ds
-    # Create dataset instances for each split, applying the appropriate transformations
-
-def create_dataloaders(train_ds, val_ds, test_ds):
     loader_kwargs = {
         "batch_size": config.BATCH_SIZE,
         "num_workers": config.NUM_WORKERS,
@@ -124,18 +164,8 @@ def create_dataloaders(train_ds, val_ds, test_ds):
     train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
     val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
     test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
-    
-    return train_loader, val_loader, test_loader
-    # Create dataloaders for each split, with shuffling for training and no shuffling for validation and test sets
-
-def prepare_data(df):
-    train_transforms, eval_transforms = get_transforms()
-    train_df, val_df, test_df = split_dataframe(df)
-    train_ds, val_ds, test_ds = create_datasets(train_df, val_df, test_df, train_transforms, eval_transforms)
-    train_loader, val_loader, test_loader = create_dataloaders(train_ds, val_ds, test_ds)
 
     return train_loader, val_loader, test_loader
-    # Main function to prepare the data: get transformations, split the dataframe, create datasets and dataloaders, and return the dataloaders for training, validation, and testing
 
 def sample_image_path(df, split="test", seed=config.RANDOM_SEED):
     df_split = df[df["split"] == split]

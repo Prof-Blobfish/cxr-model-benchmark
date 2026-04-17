@@ -1,8 +1,28 @@
+# CXR Model Benchmark: Project Overview
+
+
+This project benchmarks and tunes deep learning models for binary chest X-ray classification (normal vs abnormal) on the NIH Chest X-ray dataset. The workflow is organized into clear, progressive phases to ensure robust, reproducible, and interpretable results, and to provide a foundation for future disease-specific (multi-label) classification.
+
+**Project Phases**
+1. **Baseline Foundation:** Establish a shared, stable baseline across all models using a conservative configuration and fixed data split.
+2. **Per-Model Tuning:** Systematically tune each model (LR, freeze, scheduler, augmentation, loss, regularization) using a hypothesis-driven, one-knob-at-a-time approach.
+3. **Cross-Model Analysis:** Compare tuning behavior and results across models to extract actionable insights and identify key levers for performance.
+4. **Threshold Tuning:** Optimize each model’s decision threshold for clinical utility using validation data.
+5. **Automation:** Build and validate experiment runners and result trackers for efficient, reproducible experimentation.
+6. **Advanced Automation:** Integrate hyperparameter optimization tools (e.g., Optuna) with informed search spaces for scalable, automated sweeps.
+7. **Robustness & Reproducibility:** Confirm results with multi-seed runs, error analysis, and holdout/test set evaluation.
+8. **Extension to Disease Classification:** After establishing a robust binary pipeline, extend the framework to multi-label disease classification (e.g., 14-class NIH labels). Update data loading, model heads, loss functions, and metrics to support disease-specific outputs and evaluation.
+9. **Long Term:** Explore new architectures, ensembles, calibration, and deployment strategies for both binary and disease classification tasks.
+
+This phased approach ensures every model is tuned fairly, results are interpretable, and insights are actionable for both research and real-world deployment. The binary pipeline serves as a foundation for more complex, clinically relevant disease classification in later phases.
+
 # CXR Model Benchmark
 
 Benchmarking framework for binary chest X-ray classification (normal vs abnormal) on the NIH Chest X-ray dataset.
 
 The project compares 8 pretrained torchvision backbones organized into three families — heavy, midweight, and lightweight — using a shared data split, shared evaluation metrics, and a consistent training pipeline.
+
+
 
 ## Quick Start
 
@@ -59,6 +79,7 @@ cxr-model-benchmark/
         train.py
         train_eval.py
         utils.py
+        notebook_experiment_runner.py  # Interactive experiment runner for Jupyter/Colab
     outputs/
         checkpoints/
             best_densenet121/latest.pt
@@ -161,19 +182,6 @@ Default scheduler is Warmup + Cosine Annealing:
 
 The previous plateau scheduler path still exists in code but is not the active default.
 
-### Runtime telemetry
-
-- Live VRAM stats appear in training progress bars when `LIVE_VRAM_METRICS=True`
-- Format: `VRAM a/r/p: X.XXG(pct%)/X.XXG(pct%)/X.XXG(pct%)`
-    - **a** = currently allocated by live tensors
-    - **r** = reserved by PyTorch caching allocator (allocated + cached blocks)
-    - **p** = peak allocated seen so far this epoch
-- VRAM stats are updated every `VRAM_METRIC_UPDATE_INTERVAL` batches
-- Peak % is recorded per epoch in training history
-- Peak memory stats are reset at the start of each epoch so the peak reflects that epoch only
-
-Relevant config keys: `LIVE_VRAM_METRICS`, `VRAM_METRIC_UPDATE_INTERVAL`
-
 ### Early stopping and selection
 
 - Early stopping uses PATIENCE
@@ -196,6 +204,8 @@ Relevant config keys: `LIVE_VRAM_METRICS`, `VRAM_METRIC_UPDATE_INTERVAL`
     - Device detection, filesystem path helpers, plotting, experiment output IO
 - src/experiement_types.py
     - Dataclasses for structured metrics/history persistence
+- src/notebook_experiment_runner.py  
+    - Jupyter/Colab utility for interactive, multi-seed experiment execution, logging, and result display.
 
 ## Output Artifacts
 
@@ -217,6 +227,7 @@ Relevant config keys: `LIVE_VRAM_METRICS`, `VRAM_METRIC_UPDATE_INTERVAL`
     - Reload best checkpoint and evaluate on test set
     - Persist metrics/history to experiment_outputs.json
 5. Plot cross-model comparisons in notebooks/08_model_comparison.ipynb
+6. For interactive or multi-seed experiments in notebooks, use `src/notebook_experiment_runner.py` for streamlined execution, logging, and result display.
 
 ## Reproducible Benchmark Checklist
 

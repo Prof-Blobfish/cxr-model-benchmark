@@ -43,6 +43,9 @@ def run_training_pipeline(
     device,
     live_plot=False,
     resume_from_checkpoint=None,
+    show_run_configuration=True,
+    epoch_log_path=None,
+    epoch_log_prefix=None,
 ):
     print(f"\n=== Training {model_name} ===")
     model = model_builder().to(device)
@@ -55,16 +58,18 @@ def run_training_pipeline(
     if resume_from_checkpoint is None:
         resume_from_checkpoint = config.AUTO_RESUME_TRAINING
 
-    print_run_configuration(
-        model_name=model_name,
-        training_control=training_control,
-        resume_from_checkpoint=resume_from_checkpoint,
-    )
+    if show_run_configuration:
+        print_run_configuration(
+            model_name=model_name,
+            training_control=training_control,
+            resume_from_checkpoint=resume_from_checkpoint,
+        )
     
     save_name = f"best_{model_name.lower().replace('-', '_')}"
     checkpoint_path = get_training_checkpoint_path(save_name)
 
     history = train_model(
+        model_name=model_name,
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -78,7 +83,8 @@ def run_training_pipeline(
         resume_from_checkpoint=resume_from_checkpoint,
         patience=int(training_control.get("patience", config.PATIENCE)),
         live_plot=live_plot,
-        live_plot_model_name=model_name,
+        epoch_log_path=epoch_log_path,
+        epoch_log_prefix=epoch_log_prefix,
     )
 
     save_path = get_model_path(save_name)
